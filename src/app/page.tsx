@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import * as THREE from 'three';
 import ImageUploader from '../components/ImageUploader';
 import SettingsPanel from '../components/SettingsPanel';
+import TextureMapsPanel from '../components/TextureMapsPanel';
 import ExportButtons from '../components/ExportButtons';
 import ContourDebug from '../components/ContourDebug';
 import MeshStatsPanel from '../components/MeshStatsPanel';
@@ -40,6 +41,13 @@ export default function Home() {
   const [useBackImage, setUseBackImage] = useState(false);
   const [backImageFile, setBackImageFile] = useState<File | null>(null);
   const [backImageData, setBackImageData] = useState<ImageData | null>(null);
+  // Uploaded PBR maps
+  const [normalMapFile, setNormalMapFile] = useState<File | null>(null);
+  const [normalMapData, setNormalMapData] = useState<ImageData | null>(null);
+  const [roughnessFile, setRoughnessFile] = useState<File | null>(null);
+  const [roughnessData, setRoughnessData] = useState<ImageData | null>(null);
+  const [metallicFile, setMetallicFile] = useState<File | null>(null);
+  const [metallicData, setMetallicData] = useState<ImageData | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [mesh, setMesh] = useState<THREE.Mesh | null>(null);
   const [outline, setOutline] = useState<THREE.Group | null>(null);
@@ -55,7 +63,15 @@ export default function Home() {
 
   // toleranceOverride takes priority over settings.simplifyTolerance
   const process = useCallback(
-    async (imgData: ImageData, s: AppSettings, toleranceOverride?: number, backImg?: ImageData) => {
+    async (
+      imgData: ImageData,
+      s: AppSettings,
+      toleranceOverride?: number,
+      backImg?: ImageData,
+      normalImg?: ImageData,
+      roughnessImg?: ImageData,
+      metallicImg?: ImageData,
+    ) => {
       const id = ++runId.current;
       setStatusKind('working');
       const tol = toleranceOverride ?? s.simplifyTolerance;
@@ -88,6 +104,9 @@ export default function Home() {
           backImageData: backImg,
           reliefEnabled: s.reliefEnabled,
           reliefStrength: s.reliefStrength,
+          uploadedNormalMap: normalImg,
+          uploadedRoughnessMap: roughnessImg,
+          uploadedMetallicMap: metallicImg,
         });
 
         const newOutline = s.outlineEnabled
@@ -115,31 +134,82 @@ export default function Home() {
     [],
   );
 
+  // Helper to get current extra textures
+  const extraMaps = useCallback(() => ({
+    back:      useBackImage ? backImageData ?? undefined : undefined,
+    normal:    normalMapData   ?? undefined,
+    roughness: roughnessData   ?? undefined,
+    metallic:  metallicData    ?? undefined,
+  }), [useBackImage, backImageData, normalMapData, roughnessData, metallicData]);
+
+  const reprocess = useCallback((imgData: ImageData, s: AppSettings, tol?: number) => {
+    const m = extraMaps();
+    process(imgData, s, tol, m.back, m.normal, m.roughness, m.metallic);
+  }, [process, extraMaps]);
+
   const handleImage = useCallback(
     (file: File, imgData: ImageData) => {
       setImageFile(file);
       setImageData(imgData);
-      process(imgData, settings, presetTol ?? undefined, useBackImage ? backImageData ?? undefined : undefined);
+      reprocess(imgData, settings, presetTol ?? undefined);
     },
-    [settings, presetTol, process, useBackImage, backImageData],
+    [settings, presetTol, reprocess],
   );
 
   const handleBackImage = useCallback(
     (file: File, imgData: ImageData) => {
       setBackImageFile(file);
       setBackImageData(imgData);
-      if (imageData) process(imageData, settings, presetTol ?? undefined, imgData);
+      if (imageData) {
+        const m = extraMaps();
+        process(imageData, settings, presetTol ?? undefined, imgData, m.normal, m.roughness, m.metallic);
+      }
     },
-    [imageData, settings, presetTol, process],
+    [imageData, settings, presetTol, process, extraMaps],
   );
 
   const handleToggleBackImage = useCallback(
     (enabled: boolean) => {
       setUseBackImage(enabled);
       if (!enabled) setBackImageFile(null);
-      if (imageData) process(imageData, settings, presetTol ?? undefined, enabled ? backImageData ?? undefined : undefined);
+      if (imageData) {
+        const m = extraMaps();
+        process(imageData, settings, presetTol ?? undefined, enabled ? m.back : undefined, m.normal, m.roughness, m.metallic);
+      }
     },
-    [imageData, settings, presetTol, process, backImageData],
+    [imageData, settings, presetTol, process, extraMaps],
+  );
+
+  const handleMapUpload = useCallback(
+    (kind: 'normal' | 'roughness' | 'metallic', file: File, imgData: ImageData) => {
+      if (kind === 'normal')    { setNormalMapFile(file);  setNormalMapData(imgData); }
+      if (kind === 'roughness') { setRoughnessFile(file);  setRoughnessData(imgData); }
+      if (kind === 'metallic')  { setMetallicFile(file);   setMetallicData(imgData); }
+      if (imageData) {
+        const m = extraMaps();
+        const n = kind === 'normal'    ? imgData : m.normal;
+        const r = kind === 'roughness' ? imgData : m.roughness;
+        const me = kind === 'metallic'  ? imgData : m.metallic;
+        process(imageData, settings, presetTol ?? undefined, m.back, n, r, me);
+      }
+    },
+    [imageData, settings, presetTol, process, extraMaps],
+  );
+
+  const handleMapClear = useCallback(
+    (kind: 'normal' | 'roughness' | 'metallic') => {
+      if (kind === 'normal')    { setNormalMapFile(null);  setNormalMapData(null); }
+      if (kind === 'roughness') { setRoughnessFile(null);  setRoughnessData(null); }
+      if (kind === 'metallic')  { setMetallicFile(null);   setMetallicData(null); }
+      if (imageData) {
+        const m = extraMaps();
+        const n = kind === 'normal'    ? undefined : m.normal;
+        const r = kind === 'roughness' ? undefined : m.roughness;
+        const me = kind === 'metallic'  ? undefined : m.metallic;
+        process(imageData, settings, presetTol ?? undefined, m.back, n, r, me);
+      }
+    },
+    [imageData, settings, presetTol, process, extraMaps],
   );
 
   // Slider/setting change → clears any active preset
@@ -147,18 +217,18 @@ export default function Home() {
     (s: AppSettings) => {
       setPresetTol(null);
       setSettings(s);
-      if (imageData) process(imageData, s, undefined, useBackImage ? backImageData ?? undefined : undefined);
+      if (imageData) reprocess(imageData, s);
     },
-    [imageData, process, useBackImage, backImageData],
+    [imageData, reprocess],
   );
 
   // Preset click → rebuilds with override tol, sliders unchanged
   const handlePreset = useCallback(
     (tol: number) => {
       setPresetTol(tol);
-      if (imageData) process(imageData, settings, tol, useBackImage ? backImageData ?? undefined : undefined);
+      if (imageData) reprocess(imageData, settings, tol);
     },
-    [imageData, settings, process, useBackImage, backImageData],
+    [imageData, settings, reprocess],
   );
 
   return (
@@ -184,6 +254,15 @@ export default function Home() {
         <SettingsPanel
           settings={settings}
           onChange={handleSettings}
+          disabled={statusKind === 'working'}
+        />
+
+        <TextureMapsPanel
+          normalFile={normalMapFile}
+          roughnessFile={roughnessFile}
+          metallicFile={metallicFile}
+          onUpload={handleMapUpload}
+          onClear={handleMapClear}
           disabled={statusKind === 'working'}
         />
 

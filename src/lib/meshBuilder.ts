@@ -16,11 +16,16 @@ export interface MeshOptions {
   scale: number;
   sideMode: SideMode;
   sideColor: string;
+  // Procedural normal map (Sobel) — used when no uploadedNormalMap
   normalMapEnabled: boolean;
   normalMapStrength: number;
   backImageData?: ImageData;
   reliefEnabled: boolean;
   reliefStrength: number;
+  // Uploaded PBR maps — override procedural when present
+  uploadedNormalMap?: ImageData;
+  uploadedRoughnessMap?: ImageData;
+  uploadedMetallicMap?: ImageData;
 }
 
 // ── Relief helpers ────────────────────────────────────────────────────────────
@@ -88,24 +93,32 @@ function normalize(
   ]);
 }
 
+// Side UVs: U = cumulative perimeter (0→1 around contour), V = 1 at front / 0 at back.
+// Fully parametric — no dependency on pixel coords. Unity-compatible.
 function addSideQuads(
   contourPx: Contour2D,
   normCoords: Array<[number, number]>,
   halfZ: number,
-  width: number,
-  height: number,
-  sideBase: number,
   currentVertexCount: number,
   positions: number[],
   normals: number[],
   uvs: number[],
   colors: number[],
   indices: number[],
-  uvFn: (px: number, py: number) => [number, number],
   colorFn?: (px: number, py: number) => [number, number, number],
 ): number {
   const n = normCoords.length;
   let vOffset = currentVertexCount;
+
+  // Precompute perimeter-based U coordinates
+  const cumDist = [0];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = normCoords[j][0] - normCoords[i][0];
+    const dy = normCoords[j][1] - normCoords[i][1];
+    cumDist.push(cumDist[i] + Math.sqrt(dx * dx + dy * dy));
+  }
+  const totalDist = cumDist[n] || 1;
 
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
@@ -118,18 +131,19 @@ function addSideQuads(
     const nx = ey / len;
     const ny = -ex / len;
 
+    const uA = cumDist[i] / totalDist;
+    const uB = cumDist[i + 1] / totalDist;
+
     const vb = vOffset;
+    // v0=front-A, v1=front-B, v2=back-B, v3=back-A
     positions.push(ax, ay, halfZ, bx, by, halfZ, bx, by, -halfZ, ax, ay, -halfZ);
     for (let k = 0; k < 4; k++) normals.push(nx, ny, 0);
-
-    const [ua, va] = uvFn(contourPx[i][0], contourPx[i][1]);
-    const [ub, vb2] = uvFn(contourPx[j][0], contourPx[j][1]);
-    uvs.push(ua, va, ub, vb2, ub, vb2, ua, va);
+    // V=1 at +halfZ (front face side), V=0 at -halfZ (back face side)
+    uvs.push(uA, 1, uB, 1, uB, 0, uA, 0);
 
     if (colorFn) {
       const ca = colorFn(contourPx[i][0], contourPx[i][1]);
       const cb = colorFn(contourPx[j][0], contourPx[j][1]);
-      // v0(ax top), v1(bx top), v2(bx bot), v3(ax bot)
       colors.push(...ca, ...cb, ...cb, ...ca);
     } else {
       colors.push(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
@@ -139,7 +153,7 @@ function addSideQuads(
     vOffset += 4;
   }
 
-  return vOffset; // new currentVertexCount
+  return vOffset;
 }
 
 export function buildExtrudedMesh(
@@ -147,7 +161,13 @@ export function buildExtrudedMesh(
   imageData: ImageData,
   options: MeshOptions,
 ): { mesh: THREE.Mesh; stats: MeshStats } {
-  const { depth, scale, sideMode, sideColor, normalMapEnabled, normalMapStrength, backImageData, reliefEnabled, reliefStrength } = options;
+  const {
+    depth, scale, sideMode, sideColor,
+    normalMapEnabled, normalMapStrength,
+    backImageData,
+    reliefEnabled, reliefStrength,
+    uploadedNormalMap, uploadedRoughnessMap, uploadedMetallicMap,
+  } = options;
   const { width, height } = imageData;
   const cx = width / 2;
   const cy = height / 2;
@@ -280,19 +300,17 @@ export function buildExtrudedMesh(
   const frontBackIndexCount = frontIndexCount + backIndexCount;
 
   // --- Side faces ---
-  let vCount = totalVerts * 2;
+  let vCount = positions.length / 3; // actual vertex count after front + back
 
-  // Outer sides
   vCount = addSideQuads(
-    outer, outerNorm, halfZ, width, height, vCount, vCount,
-    positions, normals, uvs, colors, indices, uvFn, edgeColorFn,
+    outer, outerNorm, halfZ, vCount,
+    positions, normals, uvs, colors, indices, edgeColorFn,
   );
 
-  // Hole sides — same formula, winding naturally reversed because holes are CW
   for (let h = 0; h < holes.length; h++) {
     vCount = addSideQuads(
-      holes[h], holesNorm[h], halfZ, width, height, vCount, vCount,
-      positions, normals, uvs, colors, indices, uvFn, edgeColorFn,
+      holes[h], holesNorm[h], halfZ, vCount,
+      positions, normals, uvs, colors, indices, edgeColorFn,
     );
   }
 
@@ -319,57 +337,53 @@ export function buildExtrudedMesh(
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
 
-  const texture = makeTexture(imageData);
-  const normalTex = normalMapEnabled
-    ? makeNormalMap(imageData, normalMapStrength)
+  // ── Texture map resolution ────────────────────────────────────────────────
+  const frontTex   = makeTexture(imageData);
+  // Normal: uploaded map takes priority over procedural Sobel
+  const normalTex: THREE.Texture | null =
+    uploadedNormalMap  ? makeTexture(uploadedNormalMap)
+    : normalMapEnabled ? makeNormalMap(imageData, normalMapStrength)
     : null;
+  const roughnessTex: THREE.Texture | null = uploadedRoughnessMap ? makeTexture(uploadedRoughnessMap) : null;
+  const metalnessTex: THREE.Texture | null = uploadedMetallicMap  ? makeTexture(uploadedMetallicMap)  : null;
 
-  const faceMatProps: THREE.MeshStandardMaterialParameters = {
-    map: texture,
-    side: THREE.DoubleSide,
-    roughness: 0.85,
-    metalness: 0.05,
+  // ── Material builder ──────────────────────────────────────────────────────
+  const buildFaceMat = (
+    baseTex: THREE.Texture,
+    nTex = normalTex,
+    rTex = roughnessTex,
+    mTex = metalnessTex,
+  ): THREE.MeshStandardMaterial => {
+    const p: THREE.MeshStandardMaterialParameters = {
+      map: baseTex,
+      side: THREE.DoubleSide,
+      roughness: rTex ? 1.0 : 0.85,
+      metalness: mTex ? 1.0 : 0.05,
+    };
+    if (nTex) { p.normalMap = nTex; p.normalScale = new THREE.Vector2(1, 1); }
+    if (rTex) p.roughnessMap = rTex;
+    if (mTex) p.metalnessMap = mTex;
+    return new THREE.MeshStandardMaterial(p);
   };
-  if (normalTex) {
-    faceMatProps.normalMap = normalTex;
-    faceMatProps.normalScale = new THREE.Vector2(1, 1);
-  }
-  const faceMat = new THREE.MeshStandardMaterial(faceMatProps);
 
+  const faceMat = buildFaceMat(frontTex);
+
+  // Side material — PBR maps not applied to sides (perimeter UVs ≠ image-space)
   const sideMat =
     sideMode === 'image'
-      ? new THREE.MeshStandardMaterial({ ...faceMatProps })
+      ? buildFaceMat(frontTex, null, null, null) // project front texture, no PBR maps
       : sideMode === 'edge'
-        ? new THREE.MeshStandardMaterial({
-            vertexColors: true,
-            side: THREE.DoubleSide,
-            roughness: 0.85,
-            metalness: 0.05,
-          })
-        : new THREE.MeshStandardMaterial({
-            color: new THREE.Color(sideColor),
-            side: THREE.DoubleSide,
-            roughness: 0.85,
-            metalness: 0.05,
-          });
+        ? new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0.05 })
+        : new THREE.MeshStandardMaterial({ color: new THREE.Color(sideColor), side: THREE.DoubleSide, roughness: 0.85, metalness: 0.05 });
 
   let materials: THREE.MeshStandardMaterial[];
   if (backImageData) {
-    const backTexture = makeTexture(backImageData);
-    const backNormalTex = normalMapEnabled
-      ? makeNormalMap(backImageData, normalMapStrength)
+    const backTex = makeTexture(backImageData);
+    const backNormalTex: THREE.Texture | null =
+      uploadedNormalMap  ? makeTexture(uploadedNormalMap)
+      : normalMapEnabled ? makeNormalMap(backImageData, normalMapStrength)
       : null;
-    const backMatProps: THREE.MeshStandardMaterialParameters = {
-      map: backTexture,
-      side: THREE.DoubleSide,
-      roughness: 0.85,
-      metalness: 0.05,
-    };
-    if (backNormalTex) {
-      backMatProps.normalMap = backNormalTex;
-      backMatProps.normalScale = new THREE.Vector2(1, 1);
-    }
-    const backMat = new THREE.MeshStandardMaterial(backMatProps);
+    const backMat = buildFaceMat(backTex, backNormalTex, roughnessTex, metalnessTex);
     materials = [faceMat, backMat, sideMat];
   } else {
     materials = [faceMat, sideMat];

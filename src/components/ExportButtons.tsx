@@ -62,7 +62,7 @@ export default function ExportButtons({ mesh }: Props) {
       </div>
       <div className="export-col">
         <button disabled={!mesh} onClick={() => mesh && exportOBJ(mesh)}>
-          Export ZIP
+          Export OBJ
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.obj)}</span>}
       </div>

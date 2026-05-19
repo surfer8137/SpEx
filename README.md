@@ -1,6 +1,6 @@
 # SpEx: Sprite Extruder
 
-> **Vibecodead** — born from vibes, caffeine, and a stubborn refusal to touch Blender.
+> **Vibecoded** — born from vibes, caffeine, and a stubborn refusal to touch Blender.
 
 Drop a PNG sprite, get a 3D model. That's it.
 

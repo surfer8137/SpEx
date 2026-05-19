@@ -239,6 +239,18 @@ body {
   color: var(--muted);
 }
 
+.export-hint-link {
+  font-size: 10px;
+  color: var(--accent);
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+.export-hint-link:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 .export-buttons button {
   padding: 8px 10px;
   background: var(--accent);

@@ -61,6 +61,17 @@ Open [http://localhost:3000](http://localhost:3000).
 | GLB | Embedded | Single file, works everywhere |
 | OBJ | Separate PNG + MTL | Classic, imports into most 3D software |
 
+### Unity import
+
+Use [**GLTFast**](https://github.com/atteneder/glTFast) to import GLB files into Unity with full PBR texture support:
+
+```
+Window → Package Manager → Add by name:
+com.unity.cloud.gltfast
+```
+
+Then drag the `.glb` into your Assets folder — mesh, materials, and all texture maps import automatically.
+
 ## Settings
 
 | Setting | Effect |

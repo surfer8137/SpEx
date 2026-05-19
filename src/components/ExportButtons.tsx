@@ -59,6 +59,14 @@ export default function ExportButtons({ mesh }: Props) {
           Export GLB
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.glb)}</span>}
+        <a
+          className="export-hint-link"
+          href="https://github.com/atteneder/glTFast"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Unity: GLTFast ↗
+        </a>
       </div>
       <div className="export-col">
         <button disabled={!mesh} onClick={() => mesh && exportOBJ(mesh)}>

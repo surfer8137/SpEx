@@ -8,6 +8,14 @@ SpEx takes any sprite image and extrudes it into a proper low-poly 3D mesh — s
 
 ---
 
+## Examples
+
+| Gun sprite | Character (front) | Character (back face) |
+|---|---|---|
+| ![gun](screenshots/gun.png) | ![jainitor front](screenshots/jainitor-front.png) | ![jainitor back](screenshots/jainitor-back.png) |
+
+---
+
 ## What it does
 
 - **Silhouette extraction** — OpenCV.js traces the outer contour and any interior holes automatically

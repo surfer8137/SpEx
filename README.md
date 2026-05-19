@@ -38,19 +38,6 @@ Open [http://localhost:3000](http://localhost:3000).
 
 > OpenCV.js loads from the official CDN on first visit (~8 MB). First processing run waits for init (~2–5 s).
 
-## Deploy to Vercel
-
-Push the repo to GitHub, import in Vercel, set **Root Directory** to `js` — framework auto-detects as Next.js.
-
-Or one-click from the CLI:
-
-```bash
-cd js
-npx vercel
-```
-
-No env vars needed — OpenCV.js loads from the official CDN.
-
 ## Usage
 
 1. Upload a PNG (transparent background works best, white background also supported)

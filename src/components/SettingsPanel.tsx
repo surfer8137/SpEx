@@ -1,5 +1,5 @@
 'use client';
-import type { AppSettings } from '../types';
+import type { AppSettings, FaceMode } from '../types';
 
 interface Props {
   settings: AppSettings;
@@ -14,6 +14,87 @@ export default function SettingsPanel({ settings, onChange, disabled }: Props) {
   return (
     <div className="settings-panel">
       <h3>Settings</h3>
+
+      <label className="label-row">
+        <input
+          type="checkbox"
+          checked={settings.latheMode}
+          onChange={(e) => update('latheMode', e.target.checked)}
+          disabled={disabled}
+        />
+        Lathe (revolution 360°)
+      </label>
+
+      {settings.latheMode && (
+        <>
+          <label>
+            Segments&nbsp;
+            <span className="val">{settings.latheSegments}</span>
+            <input
+              type="range"
+              min="6"
+              max="64"
+              step="2"
+              value={settings.latheSegments}
+              onChange={(e) => update('latheSegments', parseInt(e.target.value))}
+              disabled={disabled}
+            />
+          </label>
+          <label className="label-row">
+            <input
+              type="checkbox"
+              checked={settings.latheClosed}
+              onChange={(e) => update('latheClosed', e.target.checked)}
+              disabled={disabled}
+            />
+            Close caps (fill top &amp; bottom)
+          </label>
+          <label className="label-row">
+            <input
+              type="checkbox"
+              checked={settings.latheStretchTexture}
+              onChange={(e) => update('latheStretchTexture', e.target.checked)}
+              disabled={disabled}
+            />
+            Stretch texture (full coverage)
+          </label>
+          {settings.latheStretchTexture && (
+            <label>
+              Strip width&nbsp;
+              <span className="val">
+                {settings.latheColumnWidth === 0 ? 'auto' : `${settings.latheColumnWidth}px`}
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="128"
+                step="1"
+                value={settings.latheColumnWidth}
+                onChange={(e) => update('latheColumnWidth', parseInt(e.target.value))}
+                disabled={disabled}
+              />
+            </label>
+          )}
+        </>
+      )}
+
+      <div className="settings-divider" />
+
+      <label>
+        Face Mode
+        <select
+          value={settings.faceMode}
+          onChange={(e) => update('faceMode', e.target.value as FaceMode)}
+          disabled={disabled}
+        >
+          <option value="front">Front only</option>
+          <option value="front-back">Front + Back</option>
+          <option value="front-back-lr">Front + Back + Left/Right</option>
+          <option value="front-back-lrtb">Front + Back + All sides</option>
+        </select>
+      </label>
+
+      <div className="settings-divider" />
 
       <label>
         Background Mode

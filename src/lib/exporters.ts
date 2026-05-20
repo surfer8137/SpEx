@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { zip } from 'fflate';
+import { FBXExporter } from './FBXExporter';
 
 // GLB — all textures embedded (base, normal, roughness, metalness). Unity-ready via GLTFast.
 export function exportGLB(mesh: THREE.Mesh): void {
@@ -95,6 +96,13 @@ export function exportOBJ(mesh: THREE.Mesh): void {
   };
 
   bundle();
+}
+
+// FBX — textures embedded via needle-tools/three-fbx-exporter (bundled locally).
+export async function exportFBX(mesh: THREE.Mesh): Promise<void> {
+  const exporter = new FBXExporter();
+  const result = await exporter.export(mesh, { binary: true });
+  downloadBlob(new Blob([result.fbxData as ArrayBuffer], { type: 'application/octet-stream' }), 'model.fbx');
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

@@ -21,8 +21,14 @@ SpEx takes any sprite image and extrudes it into a proper low-poly 3D mesh — s
 - **Silhouette extraction** — OpenCV.js traces the outer contour and any interior holes automatically
 - **Extrusion** — earcut triangulates the 2D shape, meshBuilder pushes it into 3D
 - **Texture mapping** — the original sprite pixel-perfect on front and back, projected on the sides too
+- **Box face builder** — build a 6-panel box directly from face images (great for buildings/props)
+- **Atlas mapper** — assign one atlas image to front/back/left/right/top/bottom tiles
+- **Face editor + weld** — per-face offsets plus weld mode to keep edges closed and avoid panel gaps
+- **Gap fill modes (box mode)** — fill transparent texels with `edge-stretch`, `flat-color`, or keep transparent
+- **360° lathe mode** — revolve a profile into a closed radial mesh
 - **Normal maps** — optional Sobel procedural normal map for depth without extra geometry
 - **Outline rendering** — optional wireframe-style outline overlay
+- **Rigger (WIP)** — Mixamo-style marker placement, auto skinning, and built-in animation preview
 - **Export** — GLB (self-contained, textures embedded) or OBJ+MTL+PNG (classic triple-file)
 - **LOD presets** — Ultra / High / Med / Low poly switches, sliders untouched
 
@@ -49,10 +55,14 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Usage
 
 1. Upload a PNG (transparent background works best, white background also supported)
-2. Adjust **Extrusion Depth**, **Simplify Tolerance**, **Scale** to taste
-3. Use **LOD presets** in the stats panel to quickly switch poly density
-4. Toggle **Outline** and **Normal Map** for extra flair
-5. Hit **Export GLB** (for game engines, Sketchfab, etc.) or **Export OBJ** (for anything else)
+2. Choose **Face Mode** (`front`, `front-back`, `front-back-lr`, `front-back-lrtb`)
+3. Choose **One image** (atlas) or **Per face** uploads
+4. For box workflows, enable **Box Mode** and tune **Gap Fill Mode**
+5. Adjust **Extrusion Depth**, **Simplify Tolerance**, **Scale** to taste
+6. Use **LOD presets** in the stats panel to quickly switch poly density
+7. Toggle **Outline**, **Normal Map**, and/or **Relief** for extra detail
+8. Optional: open **Rigger (WIP)**, place markers, **Build Rig**, then preview animations (`walk`, `run`, `idle`, `wave`)
+9. Hit **Export GLB** (for game engines, Sketchfab, etc.) or **Export OBJ** (for anything else)
 
 ## Export formats
 
@@ -77,12 +87,20 @@ Then drag the `.glb` into your Assets folder — mesh, materials, and all textur
 | Setting | Effect |
 |---------|--------|
 | Background Mode | `auto` detects alpha vs white. Force if wrong. |
+| Face Mode | Controls how many model faces are generated and textured. |
 | Extrusion Depth | Thickness of the 3D solid |
 | Simplify Tolerance | Higher = fewer verts = blockier silhouette |
 | Scale | World-space size of the model |
-| Side Texture | Project image onto sides, or use flat color |
+| Box Mode | Uses 6 flat panels from face images instead of silhouette extrusion. |
+| Side Texture | Side-face shading mode (`image`, `edge`, `flat`). |
+| Gap Fill Mode (box) | How transparent texels are filled: `edge-stretch`, `flat-color`, or keep transparent. |
+| Gap Fill Color (box) | Color used when `Gap Fill Mode = flat-color`. |
+| Weld Faces (Face Editor) | Keeps adjacent box panels connected while pushing/pulling face planes. |
+| Face Offsets (Face Editor) | Per-face translation/depth controls to align or stylize panels. |
 | Normal Map (Sobel) | Procedural normal map from image luminance |
+| Relief | Real geometry displacement from texture luminance. |
 | Outline | Renders a line overlay tracing the silhouette |
+| Rigger (WIP) | Adds a skeleton + skinning and enables animation previews. |
 
 ---
 

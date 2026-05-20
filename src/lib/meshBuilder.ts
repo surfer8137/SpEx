@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import earcut from 'earcut';
 import type { ContourResult, Contour2D } from './contourExtractor';
-import type { SideMode, FaceMode } from '../types';
+import type { SideMode, FaceMode, FaceOffsets } from '../types';
 import { makeNormalMap } from './normalMapGen';
 
 export interface MeshStats {
@@ -33,6 +33,10 @@ export interface MeshOptions {
   uploadedNormalMap?: ImageData;
   uploadedRoughnessMap?: ImageData;
   uploadedMetallicMap?: ImageData;
+  // Per-face position offsets (world units, from Face Editor Panel)
+  faceOffsets?: FaceOffsets;
+  // When true, depth offsets define face planes → closed watertight box (no gaps)
+  weldFaces?: boolean;
 }
 
 // ── Relief helpers ────────────────────────────────────────────────────────────
@@ -77,6 +81,134 @@ function subdivide(tris: Array<[RV, RV, RV]>): Array<[RV, RV, RV]> {
   return next;
 }
 
+/**
+ * Adjusts texture repeat/offset so the image covers the panel while preserving
+ * aspect ratio (CSS background-size: cover behaviour — centered, may crop).
+ */
+function coverTexture(
+  tex: THREE.Texture,
+  panelW: number, panelH: number,
+  imgW: number,   imgH: number,
+): void {
+  const pa = panelW / Math.max(panelH, 1e-6);
+  const ia = imgW   / Math.max(imgH,   1e-6);
+  if (pa > ia) {
+    const s = pa / ia;
+    tex.repeat.set(1, 1 / s);
+    tex.offset.set(0, (1 - 1 / s) / 2);
+  } else {
+    const s = ia / pa;
+    tex.repeat.set(1 / s, 1);
+    tex.offset.set((1 - 1 / s) / 2, 0);
+  }
+}
+
+/**
+ * Detects the bounding box of non-background pixels.
+ * Auto-selects alpha vs white-threshold detection based on image content.
+ */
+function contentBounds(img: ImageData): { x0: number; y0: number; x1: number; y1: number } {
+  const { data, width, height } = img;
+
+  // Detect if image uses transparency
+  let hasTransparency = false;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 200) { hasTransparency = true; break; }
+  }
+
+  const isFg = hasTransparency
+    ? (_r: number, _g: number, _b: number, a: number) => a >= 128
+    : (r: number,  g: number,  b: number, _a: number) => !(r > 235 && g > 235 && b > 235);
+
+  let x0 = width, y0 = height, x1 = -1, y1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const p = (y * width + x) * 4;
+      if (isFg(data[p], data[p + 1], data[p + 2], data[p + 3])) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+
+  if (x1 < 0) return { x0: 0, y0: 0, x1: width, y1: height }; // no content — use full image
+  return { x0, y0, x1: x1 + 1, y1: y1 + 1 };
+}
+
+/**
+ * BFS flood-fill from all 4 edges: any white-ish pixel reachable from the border
+ * is considered background and made transparent (alpha = 0).
+ * Skips images that already have transparency — those are assumed pre-keyed.
+ */
+function removeWhiteBackground(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d')!;
+  const { width, height } = canvas;
+  const id = ctx.getImageData(0, 0, width, height);
+  const d  = id.data;
+
+  // If image already carries transparency, assume it is pre-keyed — leave it alone
+  for (let i = 3; i < d.length; i += 4) {
+    if (d[i] < 200) return;
+  }
+
+  const isWhitish = (p: number) =>
+    d[p] > 225 && d[p + 1] > 225 && d[p + 2] > 225;
+
+  const seen = new Uint8Array(width * height);
+  // BFS queue (indices into the pixel grid)
+  const q: number[] = [];
+
+  // Seed: all pixels on the 4 edges
+  for (let x = 0; x < width; x++) {
+    q.push(x);                          // top row
+    q.push((height - 1) * width + x);  // bottom row
+  }
+  for (let y = 1; y < height - 1; y++) {
+    q.push(y * width);                  // left col
+    q.push(y * width + width - 1);     // right col
+  }
+
+  let head = 0;
+  while (head < q.length) {
+    const idx = q[head++];
+    if (seen[idx]) continue;
+    seen[idx] = 1;
+    if (!isWhitish(idx * 4)) continue;
+    d[idx * 4 + 3] = 0;                // make transparent
+
+    const x = idx % width;
+    const y = (idx / width) | 0;
+    if (x > 0)        q.push(idx - 1);
+    if (x < width - 1) q.push(idx + 1);
+    if (y > 0)        q.push(idx - width);
+    if (y < height - 1) q.push(idx + width);
+  }
+
+  ctx.putImageData(id, 0, 0);
+}
+
+/** Crops ImageData to its content bounding box, then removes white background. */
+function cropContent(img: ImageData): { canvas: HTMLCanvasElement; w: number; h: number } {
+  const { x0, y0, x1, y1 } = contentBounds(img);
+  const w = x1 - x0, h = y1 - y0;
+  const src = document.createElement('canvas');
+  src.width = img.width; src.height = img.height;
+  src.getContext('2d')!.putImageData(img, 0, 0);
+  const dst = document.createElement('canvas');
+  dst.width = w; dst.height = h;
+  dst.getContext('2d')!.drawImage(src, x0, y0, w, h, 0, 0, w, h);
+  removeWhiteBackground(dst);
+  return { canvas: dst, w, h };
+}
+
+function canvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.flipY = false;
+  return tex;
+}
+
 function makeTexture(imageData: ImageData): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
@@ -100,8 +232,16 @@ function normalize(
   ]);
 }
 
+// Planar UV bounds for world-space projection (used when a dedicated side image is supplied).
+interface PlanarBounds {
+  yMin: number; yMax: number;
+  xMin: number; xMax: number;
+  dir: 'lr' | 'tb'; // lr = left/right face, tb = top/bottom face
+}
+
 // Side UVs: U = cumulative perimeter (0→1 around contour), V = 1 at front / 0 at back.
-// Fully parametric — no dependency on pixel coords. Unity-compatible.
+// When planarBounds is given, world-space UV is used instead so a dedicated side image
+// projects correctly as a flat panel (depth → U, height → V for lr; width → U, depth → V for tb).
 function addSideQuads(
   contourPx: Contour2D,
   normCoords: Array<[number, number]>,
@@ -114,6 +254,7 @@ function addSideQuads(
   indices: number[],
   colorFn?: (px: number, py: number) => [number, number, number],
   edgeFilter?: (nx: number, ny: number) => boolean,
+  planarBounds?: PlanarBounds,
 ): number {
   const n = normCoords.length;
   let vOffset = currentVertexCount;
@@ -158,8 +299,32 @@ function addSideQuads(
     // v0=front-A, v1=front-B, v2=back-B, v3=back-A
     positions.push(ax, ay, halfZ, bx, by, halfZ, bx, by, -halfZ, ax, ay, -halfZ);
     for (let k = 0; k < 4; k++) normals.push(enx, eny, 0);
-    // V=1 at +halfZ (front face side), V=0 at -halfZ (back face side)
-    uvs.push(uA, 1, uB, 1, uB, 0, uA, 0);
+
+    if (planarBounds) {
+      // World-space planar UV — side image projected as a flat panel.
+      const { yMin, yMax, xMin, xMax, dir } = planarBounds;
+      const yRange = Math.max(yMax - yMin, 0.001);
+      const xRange = Math.max(xMax - xMin, 0.001);
+      const depthRange = 2 * halfZ || 0.001;
+      const planeUV = (vx: number, vy: number, vz: number): [number, number] => {
+        if (dir === 'lr') {
+          // U: front(1)→back(0), V: top(0)→bottom(1) — matches side-view image orientation
+          return [(vz + halfZ) / depthRange, (yMax - vy) / yRange];
+        } else {
+          // top/bottom: U: left(0)→right(1), V: front(1)→back(0)
+          return [(vx - xMin) / xRange, (vz + halfZ) / depthRange];
+        }
+      };
+      const [u0, v0] = planeUV(ax, ay, halfZ);
+      const [u1, v1] = planeUV(bx, by, halfZ);
+      const [u2, v2] = planeUV(bx, by, -halfZ);
+      const [u3, v3] = planeUV(ax, ay, -halfZ);
+      uvs.push(u0, v0, u1, v1, u2, v2, u3, v3);
+    } else {
+      // Perimeter-based UV — good for edge-stretch / no dedicated image
+      // V=1 at +halfZ (front face side), V=0 at -halfZ (back face side)
+      uvs.push(uA, 1, uB, 1, uB, 0, uA, 0);
+    }
 
     if (colorFn) {
       const ca = colorFn(contourPx[i][0], contourPx[i][1]);
@@ -174,6 +339,223 @@ function addSideQuads(
   }
 
   return vOffset;
+}
+
+// ── Box mesh: 6 flat rectangular panels, one per face direction ───────────────
+// Best for buildings / props where each side is a distinct flat image.
+// The box is sized to match the front image aspect ratio × depth setting.
+export function buildBoxMesh(
+  imageData: ImageData,
+  options: MeshOptions,
+): { mesh: THREE.Mesh; stats: MeshStats } {
+  const {
+    depth, scale,
+    backImageData, sideImages,
+    normalMapEnabled, normalMapStrength,
+    uploadedNormalMap, uploadedRoughnessMap, uploadedMetallicMap,
+    faceOffsets,
+    weldFaces,
+  } = options;
+
+  // Crop every face image to its content bounding box (removes white/alpha background).
+  // Use cropped dimensions for geometry so the box fits the actual artwork, not the canvas.
+  const frontCrop = cropContent(imageData);
+  const backCrop   = backImageData     ? cropContent(backImageData)     : null;
+  const rightCrop  = sideImages?.right ? cropContent(sideImages.right)  : null;
+  const leftCrop   = sideImages?.left  ? cropContent(sideImages.left)   : null;
+  const topCrop    = sideImages?.top   ? cropContent(sideImages.top)    : null;
+  const bottomCrop = sideImages?.bottom ? cropContent(sideImages.bottom) : null;
+
+  // Base coordinate system from the front content bounds
+  const maxDim = Math.max(frontCrop.w, frontCrop.h);
+  const halfW  = (frontCrop.w / 2 / maxDim) * scale;
+  const halfH  = (frontCrop.h / 2 / maxDim) * scale;
+
+  // Depth from the side content width (same pixel scale as front width)
+  const sideCrop = rightCrop ?? leftCrop;
+  const halfZ    = sideCrop
+    ? (sideCrop.w / 2 / maxDim) * scale
+    : depth / 2;
+
+  const positions: number[] = [];
+  const normals:   number[] = [];
+  const uvs:       number[] = [];
+  const indices:   number[] = [];
+  let vi = 0;
+  const groups: { start: number; count: number; matIndex: number }[] = [];
+
+  /**
+   * Adds one quad (2 tris) with CCW winding viewed from outside.
+   * p0=top-left, p1=top-right, p2=bottom-right, p3=bottom-left (image coords).
+   * Vertices are taken as-is — callers pre-apply any offsets.
+   */
+  const addFace = (
+    p0: [number,number,number], p1: [number,number,number],
+    p2: [number,number,number], p3: [number,number,number],
+    n: [number,number,number],
+    matIndex: number,
+  ) => {
+    const start = indices.length;
+    for (const p of [p0, p1, p2, p3]) positions.push(...p);
+    for (let k = 0; k < 4; k++) normals.push(...n);
+    uvs.push(0,0, 1,0, 1,1, 0,1);
+    indices.push(vi, vi+1, vi+2,  vi, vi+2, vi+3);
+    vi += 4;
+    groups.push({ start, count: 6, matIndex });
+  };
+
+  /** Apply per-face XYZ offset to a vertex. */
+  const applyOff = (
+    face: 'front'|'back'|'right'|'left'|'top'|'bottom',
+    p: [number,number,number],
+  ): [number,number,number] => {
+    if (!faceOffsets) return p;
+    const off = faceOffsets[face];
+    if (!off) return p;
+    return [p[0] + off.x, p[1] + off.y, p[2] + off.z];
+  };
+
+  if (weldFaces) {
+    // ── Weld mode: 8 shared corners, depth offsets define face planes ──────
+    // Each face plane position:
+    const fo = faceOffsets ?? {};
+    const pZp = halfZ + (fo.front?.z  ?? 0);   // front  plane (z = +)
+    const pZn = halfZ + (fo.back?.z   ?? 0);   // back   plane (z = -)
+    const pXp = halfW + (fo.right?.x  ?? 0);   // right  plane (x = +)
+    const pXn = halfW + (fo.left?.x   ?? 0);   // left   plane (x = -)
+    const pYp = halfH + (fo.top?.y    ?? 0);   // top    plane (y = +)
+    const pYn = halfH + (fo.bottom?.y ?? 0);   // bottom plane (y = -)
+
+    // 8 corners (fr=front, bk=back, t=top, b=bottom, r=right, l=left)
+    const ftr: [number,number,number] = [+pXp, +pYp, +pZp];
+    const ftl: [number,number,number] = [-pXn, +pYp, +pZp];
+    const fbr: [number,number,number] = [+pXp, -pYn, +pZp];
+    const fbl: [number,number,number] = [-pXn, -pYn, +pZp];
+    const btr: [number,number,number] = [+pXp, +pYp, -pZn];
+    const btl: [number,number,number] = [-pXn, +pYp, -pZn];
+    const bbr: [number,number,number] = [+pXp, -pYn, -pZn];
+    const bbl: [number,number,number] = [-pXn, -pYn, -pZn];
+
+    // Front  (+Z)
+    addFace(ftl, ftr, fbr, fbl, [0,0,1], 0);
+    // Back   (-Z) — mirror X for correct winding
+    addFace(btr, btl, bbl, bbr, [0,0,-1], 1);
+    // Right  (+X)
+    addFace(ftr, btr, bbr, fbr, [1,0,0], 2);
+    // Left   (-X)
+    addFace(btl, ftl, fbl, bbl, [-1,0,0], 3);
+    // Top    (+Y)
+    addFace(btl, btr, ftr, ftl, [0,1,0], 4);
+    // Bottom (-Y)
+    addFace(fbl, fbr, bbr, bbl, [0,-1,0], 5);
+  } else {
+    // ── Free mode: independent quads, each shifted by its own XYZ offset ──
+    const ao = applyOff;
+
+    // Front  (z = +halfZ)
+    addFace(
+      ao('front', [-halfW,+halfH,+halfZ]), ao('front', [+halfW,+halfH,+halfZ]),
+      ao('front', [+halfW,-halfH,+halfZ]), ao('front', [-halfW,-halfH,+halfZ]),
+      [0,0,1], 0,
+    );
+    // Back   (z = -halfZ)
+    addFace(
+      ao('back',  [+halfW,+halfH,-halfZ]), ao('back',  [-halfW,+halfH,-halfZ]),
+      ao('back',  [-halfW,-halfH,-halfZ]), ao('back',  [+halfW,-halfH,-halfZ]),
+      [0,0,-1], 1,
+    );
+    // Right  (x = +halfW)
+    addFace(
+      ao('right', [+halfW,+halfH,+halfZ]), ao('right', [+halfW,+halfH,-halfZ]),
+      ao('right', [+halfW,-halfH,-halfZ]), ao('right', [+halfW,-halfH,+halfZ]),
+      [1,0,0], 2,
+    );
+    // Left   (x = -halfW)
+    addFace(
+      ao('left',  [-halfW,+halfH,-halfZ]), ao('left',  [-halfW,+halfH,+halfZ]),
+      ao('left',  [-halfW,-halfH,+halfZ]), ao('left',  [-halfW,-halfH,-halfZ]),
+      [-1,0,0], 3,
+    );
+    // Top    (y = +halfH)
+    addFace(
+      ao('top',    [-halfW,+halfH,-halfZ]), ao('top',    [+halfW,+halfH,-halfZ]),
+      ao('top',    [+halfW,+halfH,+halfZ]), ao('top',    [-halfW,+halfH,+halfZ]),
+      [0,1,0], 4,
+    );
+    // Bottom (y = -halfH)
+    addFace(
+      ao('bottom', [-halfW,-halfH,+halfZ]), ao('bottom', [+halfW,-halfH,+halfZ]),
+      ao('bottom', [+halfW,-halfH,-halfZ]), ao('bottom', [-halfW,-halfH,-halfZ]),
+      [0,-1,0], 5,
+    );
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
+  geo.setIndex(indices);
+  for (const g of groups) geo.addGroup(g.start, g.count, g.matIndex);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+
+  // ── Materials ──────────────────────────────────────────────────────────────
+  // All textures are built from already-cropped canvases — no white border, correct proportions.
+  const frontTex = canvasTexture(frontCrop.canvas);
+  const normalTex: THREE.Texture | null =
+    uploadedNormalMap  ? makeTexture(uploadedNormalMap)
+    : normalMapEnabled ? makeNormalMap(imageData, normalMapStrength)
+    : null;
+  const roughnessTex = uploadedRoughnessMap ? makeTexture(uploadedRoughnessMap) : null;
+  const metalnessTex = uploadedMetallicMap  ? makeTexture(uploadedMetallicMap)  : null;
+
+  const buildMat = (tex: THREE.Texture, withPBR = false): THREE.MeshStandardMaterial => {
+    const p: THREE.MeshStandardMaterialParameters = {
+      map: tex,
+      side: THREE.DoubleSide,
+      roughness: roughnessTex ? 1.0 : 0.85,
+      metalness: metalnessTex ? 1.0 : 0.05,
+      transparent: true,
+      alphaTest: 0.05,
+    };
+    if (withPBR) {
+      if (normalTex) { p.normalMap = normalTex; p.normalScale = new THREE.Vector2(1, 1); }
+      if (roughnessTex) p.roughnessMap = roughnessTex;
+      if (metalnessTex) p.metalnessMap = metalnessTex;
+    }
+    return new THREE.MeshStandardMaterial(p);
+  };
+
+  const blankMat = new THREE.MeshStandardMaterial({
+    color: 0xcccccc, side: THREE.DoubleSide, roughness: 0.9, metalness: 0,
+  });
+
+  // Panel w/h in world units — used for cover UV when crop aspect ≠ panel aspect
+  const lrH = 2 * halfH, lrW = 2 * halfZ;
+  const tbW = 2 * halfW, tbH = 2 * halfZ;
+  const fbW = 2 * halfW, fbH = 2 * halfH;
+
+  const cropTex = (crop: { canvas: HTMLCanvasElement; w: number; h: number } | null,
+                   panelW: number, panelH: number): THREE.Texture | null => {
+    if (!crop) return null;
+    const tex = canvasTexture(crop.canvas);
+    // Apply cover only if aspect ratio isn't already matched by the crop
+    coverTexture(tex, panelW, panelH, crop.w, crop.h);
+    return tex;
+  };
+
+  const materials: THREE.MeshStandardMaterial[] = [
+    buildMat(frontTex, true),                                                             // 0 front
+    buildMat(cropTex(backCrop,   fbW, fbH) ?? frontTex),                                 // 1 back
+    cropTex(rightCrop,  lrW, lrH) ? buildMat(cropTex(rightCrop,  lrW, lrH)!)  : blankMat, // 2 right
+    cropTex(leftCrop,   lrW, lrH) ? buildMat(cropTex(leftCrop,   lrW, lrH)!)  : blankMat, // 3 left
+    cropTex(topCrop,    tbW, tbH) ? buildMat(cropTex(topCrop,    tbW, tbH)!)  : blankMat,  // 4 top
+    cropTex(bottomCrop, tbW, tbH) ? buildMat(cropTex(bottomCrop, tbW, tbH)!)  : blankMat,  // 5 bottom
+  ];
+
+  const mesh = new THREE.Mesh(geo, materials);
+  const stats: MeshStats = { triangles: 12, vertices: 24, contourPts: 0, holes: 0 };
+  return { mesh, stats };
 }
 
 export function buildExtrudedMesh(
@@ -334,17 +716,24 @@ export function buildExtrudedMesh(
   const filterTop     = (enx: number, eny: number) => Math.abs(eny) > Math.abs(enx) && eny >= 0;
   const filterBottom  = (enx: number, eny: number) => Math.abs(eny) > Math.abs(enx) && eny < 0;
 
+  // Bounding box for world-space planar UV projection
+  const yMin = outerNorm.reduce((m, [, y]) => Math.min(m, y), Infinity);
+  const yMax = outerNorm.reduce((m, [, y]) => Math.max(m, y), -Infinity);
+  const xMin = outerNorm.reduce((m, [x]) => Math.min(m, x), Infinity);
+  const xMax = outerNorm.reduce((m, [x]) => Math.max(m, x), -Infinity);
+
   type GroupEntry = { start: number; count: number; matIndex: number };
   const sideGroups: GroupEntry[] = [];
 
   const addSideGroup = (
     filter: ((nx: number, ny: number) => boolean) | undefined,
     matIndex: number,
+    planarBounds?: PlanarBounds,
   ) => {
     const idxStart = indices.length;
-    vCount = addSideQuads(outer, outerNorm, halfZ, vCount, positions, normals, uvs, colors, indices, edgeColorFn, filter);
+    vCount = addSideQuads(outer, outerNorm, halfZ, vCount, positions, normals, uvs, colors, indices, edgeColorFn, filter, planarBounds);
     for (let h = 0; h < holes.length; h++) {
-      vCount = addSideQuads(holes[h], holesNorm[h], halfZ, vCount, positions, normals, uvs, colors, indices, edgeColorFn, filter);
+      vCount = addSideQuads(holes[h], holesNorm[h], halfZ, vCount, positions, normals, uvs, colors, indices, edgeColorFn, filter, planarBounds);
     }
     const count = indices.length - idxStart;
     if (count > 0) {
@@ -352,22 +741,23 @@ export function buildExtrudedMesh(
     }
   };
 
+  const lrBounds: PlanarBounds = { yMin, yMax, xMin, xMax, dir: 'lr' };
+  const tbBounds: PlanarBounds = { yMin, yMax, xMin, xMax, dir: 'tb' };
+
   if (faceMode === 'front') {
-    // single side group
     addSideGroup(undefined, 1);
   } else if (faceMode === 'front-back') {
-    // single side group — mat index 2 (front=0, back=1, sides=2)
     addSideGroup(undefined, 2);
   } else if (faceMode === 'front-back-lr') {
-    // right=2, left=3
-    addSideGroup(filterRight, 2);
-    addSideGroup(filterLeft, 3);
+    // Use planar UV for each side direction that has a dedicated image
+    addSideGroup(filterRight, 2, sideImages?.right ? lrBounds : undefined);
+    addSideGroup(filterLeft,  3, sideImages?.left  ? lrBounds : undefined);
   } else {
-    // front-back-lrtb: right=2, left=3, top=4, bottom=5
-    addSideGroup(filterLRRight, 2);
-    addSideGroup(filterLRLeft, 3);
-    addSideGroup(filterTop, 4);
-    addSideGroup(filterBottom, 5);
+    // front-back-lrtb
+    addSideGroup(filterLRRight,  2, sideImages?.right  ? lrBounds : undefined);
+    addSideGroup(filterLRLeft,   3, sideImages?.left   ? lrBounds : undefined);
+    addSideGroup(filterTop,      4, sideImages?.top    ? tbBounds : undefined);
+    addSideGroup(filterBottom,   5, sideImages?.bottom ? tbBounds : undefined);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -430,9 +820,25 @@ export function buildExtrudedMesh(
         ? new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0.05 })
         : new THREE.MeshStandardMaterial({ color: new THREE.Color(sideColor), side: THREE.DoubleSide, roughness: 0.85, metalness: 0.05 });
 
+  // Panel dimensions for cover UV (world-space normalised coords)
+  const lrPanelW = 2 * halfZ;          // depth (L/R face width in world)
+  const lrPanelH = yMax - yMin;        // building height
+  const tbPanelW = xMax - xMin;        // building width (T/B face width)
+  const tbPanelH = 2 * halfZ;          // depth (T/B face height)
+
   // Helper: build a side group material — uses uploaded image if provided, otherwise sideMat
-  const buildSideMat = (imgData?: ImageData): THREE.MeshStandardMaterial => {
-    if (imgData) return buildFaceMat(makeTexture(imgData), null, null, null);
+  const buildSideMat = (
+    imgData?: ImageData,
+    panelW?: number,
+    panelH?: number,
+  ): THREE.MeshStandardMaterial => {
+    if (imgData) {
+      const tex = makeTexture(imgData);
+      if (panelW !== undefined && panelH !== undefined) {
+        coverTexture(tex, panelW, panelH, imgData.width, imgData.height);
+      }
+      return buildFaceMat(tex, null, null, null);
+    }
     return sideMat;
   };
 
@@ -453,10 +859,10 @@ export function buildExtrudedMesh(
       : normalTex;
     const backMat = buildFaceMat(backTex, backNormalTex, roughnessTex, metalnessTex);
     materials = [
-      faceMat,                            // 0: front
-      backMat,                            // 1: back
-      buildSideMat(sideImages?.right),    // 2: right
-      buildSideMat(sideImages?.left),     // 3: left
+      faceMat,                                              // 0: front
+      backMat,                                              // 1: back
+      buildSideMat(sideImages?.right, lrPanelW, lrPanelH), // 2: right
+      buildSideMat(sideImages?.left,  lrPanelW, lrPanelH), // 3: left
     ];
   } else {
     // front-back-lrtb
@@ -466,12 +872,12 @@ export function buildExtrudedMesh(
       : normalTex;
     const backMat = buildFaceMat(backTex, backNormalTex, roughnessTex, metalnessTex);
     materials = [
-      faceMat,                            // 0: front
-      backMat,                            // 1: back
-      buildSideMat(sideImages?.right),    // 2: right
-      buildSideMat(sideImages?.left),     // 3: left
-      buildSideMat(sideImages?.top),      // 4: top
-      buildSideMat(sideImages?.bottom),   // 5: bottom
+      faceMat,                                               // 0: front
+      backMat,                                               // 1: back
+      buildSideMat(sideImages?.right,  lrPanelW, lrPanelH), // 2: right
+      buildSideMat(sideImages?.left,   lrPanelW, lrPanelH), // 3: left
+      buildSideMat(sideImages?.top,    tbPanelW, tbPanelH),  // 4: top
+      buildSideMat(sideImages?.bottom, tbPanelW, tbPanelH),  // 5: bottom
     ];
   }
 

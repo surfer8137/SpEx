@@ -45,7 +45,13 @@ export default function ImageUploader({ onImage, currentFile, label }: Props) {
         type="file"
         accept="image/png,image/*"
         style={{ display: 'none' }}
-        onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+        onChange={(e) => {
+        if (e.target.files?.[0]) {
+          handleFile(e.target.files[0]);
+          // Reset so re-selecting the same file fires onChange again
+          e.target.value = '';
+        }
+      }}
       />
       {currentFile ? (
         <p>

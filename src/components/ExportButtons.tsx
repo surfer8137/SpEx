@@ -1,6 +1,6 @@
 'use client';
 import * as THREE from 'three';
-import { exportGLB, exportOBJ, exportFBX } from '../lib/exporters';
+import { exportGLB, exportOBJ } from '../lib/exporters';
 
 interface Props {
   mesh: THREE.Mesh | null;
@@ -73,13 +73,6 @@ export default function ExportButtons({ mesh }: Props) {
           Export OBJ
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.obj)}</span>}
-      </div>
-      <div className="export-col">
-        <button disabled={!mesh} onClick={() => mesh && exportFBX(mesh)}>
-          Export FBX
-        </button>
-        {sizes && <span className="export-size">{formatBytes(sizes.glb)}</span>}
-        <span className="export-hint-link">Unity / Unreal</span>
       </div>
     </div>
   );

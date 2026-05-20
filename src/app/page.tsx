@@ -8,19 +8,26 @@ import TextureMapsPanel from '../components/TextureMapsPanel';
 import ExportButtons from '../components/ExportButtons';
 import ContourDebug from '../components/ContourDebug';
 import MeshStatsPanel from '../components/MeshStatsPanel';
+import FaceEditorPanel from '../components/FaceEditorPanel';
 import { generateMask } from '../lib/maskGenerator';
 import { extractContour, type ContourResult } from '../lib/contourExtractor';
-import { buildExtrudedMesh, buildLatheMesh, buildOutline, type MeshStats } from '../lib/meshBuilder';
-import type { AppSettings } from '../types';
+import { buildExtrudedMesh, buildBoxMesh, buildLatheMesh, buildOutline, type MeshStats } from '../lib/meshBuilder';
+import { buildSkinnedMesh } from '../lib/rigBuilder';
+import type { AppSettings, FaceOffsets } from '../types';
+import type { MixamoMarkers } from '../types/rig';
+import { DEFAULT_MIXAMO_MARKERS, deriveFullMarkers } from '../types/rig';
 
 const ThreeViewport = dynamic(() => import('../components/ThreeViewport'), {
   ssr: false,
 });
 
+const RiggerModal = dynamic(() => import('../components/RiggerModal'), { ssr: false });
+const AtlasMapperModal = dynamic(() => import('../components/AtlasMapperModal'), { ssr: false });
+
 const DEFAULT_SETTINGS: AppSettings = {
   extrusionDepth: 0.05,
-  simplifyTolerance: 1,
-  scale: 2,
+  simplifyTolerance: 0.5,
+  scale: 1,
   backgroundMode: 'auto',
   sideMode: 'image',
   sideColor: '#888888',
@@ -32,6 +39,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   normalMapStrength: 2,
   reliefEnabled: false,
   reliefStrength: 0.04,
+  boxMode: false,
   latheMode: false,
   latheSegments: 32,
   latheClosed: true,
@@ -72,8 +80,28 @@ export default function Home() {
   const [showDebug, setShowDebug] = useState(false);
   // Preset overrides tolerance for rebuild without touching slider state
   const [presetTol, setPresetTol] = useState<number | null>(null);
+  // Atlas (single-image) mode
+  const [textureMode, setTextureMode] = useState<'single' | 'multi'>('multi');
+  const [atlasFile, setAtlasFile] = useState<File | null>(null);
+  // Last loaded atlas image — kept so "Re-adjust" can reopen the mapper
+  const [atlasImageData, setAtlasImageData] = useState<ImageData | null>(null);
+  const [pendingAtlasData, setPendingAtlasData] = useState<ImageData | null>(null);
+  const [showAtlasMapper, setShowAtlasMapper] = useState(false);
+  // Face Editor state
+  const [faceOffsets, setFaceOffsets] = useState<FaceOffsets>({});
+  const [weldFaces, setWeldFaces] = useState(false);
+  // Camera reset key — increment to trigger fit
+  const [cameraResetKey, setCameraResetKey] = useState(0);
+  // Walk preview state
+  const [isRigged, setIsRigged] = useState(false);
+  const [playWalk, setPlayWalk] = useState(false);
+  // Rigger state
+  const [showRigger, setShowRigger] = useState(false);
+  const [rigMarkers, setRigMarkers] = useState<MixamoMarkers>(DEFAULT_MIXAMO_MARKERS);
+  const [rigSymmetry, setRigSymmetry] = useState(true);
 
   const runId = useRef(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // toleranceOverride takes priority over settings.simplifyTolerance
   const process = useCallback(
@@ -89,6 +117,8 @@ export default function Home() {
       leftSideImg?: ImageData,
       topSideImg?: ImageData,
       bottomSideImg?: ImageData,
+      offsets?: FaceOffsets,
+      weld?: boolean,
     ) => {
       const id = ++runId.current;
       setStatusKind('working');
@@ -111,7 +141,33 @@ export default function Home() {
         let stats: MeshStats;
         let newOutline = null;
 
-        if (s.latheMode) {
+        if (s.boxMode && !s.latheMode) {
+          // Box: 6 flat panels — skip contour extraction entirely
+          setContour(null);
+          ({ mesh: newMesh, stats } = buildBoxMesh(imgData, {
+            depth: s.extrusionDepth,
+            scale: s.scale,
+            sideMode: s.sideMode,
+            sideColor: s.sideColor,
+            faceMode: s.faceMode,
+            normalMapEnabled: s.normalMapEnabled,
+            normalMapStrength: s.normalMapStrength,
+            backImageData: s.faceMode !== 'front' ? backImg : undefined,
+            sideImages: {
+              right:  (s.faceMode === 'front-back-lr' || s.faceMode === 'front-back-lrtb') ? rightSideImg : undefined,
+              left:   (s.faceMode === 'front-back-lr' || s.faceMode === 'front-back-lrtb') ? leftSideImg  : undefined,
+              top:    s.faceMode === 'front-back-lrtb' ? topSideImg    : undefined,
+              bottom: s.faceMode === 'front-back-lrtb' ? bottomSideImg : undefined,
+            },
+            reliefEnabled: false,
+            reliefStrength: 0,
+            uploadedNormalMap: normalImg,
+            uploadedRoughnessMap: roughnessImg,
+            uploadedMetallicMap: metallicImg,
+            faceOffsets: offsets,
+            weldFaces: weld,
+          }));
+        } else if (s.latheMode) {
           // Lathe: revolve right-side silhouette profile 360° — skip contour
           setContour(null);
           ({ mesh: newMesh, stats } = buildLatheMesh(mask, imgData, {
@@ -169,6 +225,9 @@ export default function Home() {
         setMesh(newMesh);
         setOutline(newOutline);
         setMeshStats(stats);
+        // New geometry → rig is gone
+        setIsRigged(false);
+        setPlayWalk(false);
         setStatusText(`${stats.triangles} tris · ${stats.holes} holes`);
         setStatusKind('ok');
       } catch (err) {
@@ -192,9 +251,9 @@ export default function Home() {
     bottom:    s.faceMode === 'front-back-lrtb' ? bottomSideData ?? undefined : undefined,
   }), [backImageData, normalMapData, roughnessData, metallicData, rightSideData, leftSideData, topSideData, bottomSideData]);
 
-  const reprocess = useCallback((imgData: ImageData, s: AppSettings, tol?: number) => {
+  const reprocess = useCallback((imgData: ImageData, s: AppSettings, tol?: number, offsets?: FaceOffsets, weld?: boolean) => {
     const m = extraMaps(s);
-    process(imgData, s, tol, m.back, m.normal, m.roughness, m.metallic, m.right, m.left, m.top, m.bottom);
+    process(imgData, s, tol, m.back, m.normal, m.roughness, m.metallic, m.right, m.left, m.top, m.bottom, offsets, weld);
   }, [process, extraMaps]);
 
   const handleImage = useCallback(
@@ -225,12 +284,15 @@ export default function Home() {
       if (kind === 'top')    { setTopSideFile(file);    setTopSideData(imgData); }
       if (kind === 'bottom') { setBottomSideFile(file); setBottomSideData(imgData); }
       if (imageData) {
-        const m = extraMaps(settings);
-        const r     = kind === 'right'  ? imgData : m.right;
-        const l     = kind === 'left'   ? imgData : m.left;
-        const t     = kind === 'top'    ? imgData : m.top;
-        const bot   = kind === 'bottom' ? imgData : m.bottom;
-        process(imageData, settings, presetTol ?? undefined, m.back, m.normal, m.roughness, m.metallic, r, l, t, bot);
+        // First side image → auto-enable box mode for clean flat faces
+        const activeSettings = !settings.boxMode ? { ...settings, boxMode: true } : settings;
+        if (!settings.boxMode) setSettings(activeSettings);
+        const m = extraMaps(activeSettings);
+        const r   = kind === 'right'  ? imgData : m.right;
+        const l   = kind === 'left'   ? imgData : m.left;
+        const t   = kind === 'top'    ? imgData : m.top;
+        const bot = kind === 'bottom' ? imgData : m.bottom;
+        process(imageData, activeSettings, presetTol ?? undefined, m.back, m.normal, m.roughness, m.metallic, r, l, t, bot);
       }
     },
     [imageData, settings, presetTol, process, extraMaps],
@@ -291,7 +353,15 @@ export default function Home() {
     (s: AppSettings) => {
       setPresetTol(null);
       setSettings(s);
-      if (imageData) reprocess(imageData, s);
+      if (!imageData) return;
+      // Show working indicator immediately so user knows change was registered
+      setStatusKind('working');
+      setStatusText('Updating…');
+      // Debounce: wait until slider stops moving before rebuilding mesh
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        reprocess(imageData, s);
+      }, 200);
     },
     [imageData, reprocess],
   );
@@ -305,48 +375,205 @@ export default function Home() {
     [imageData, settings, reprocess],
   );
 
+  // ── Face offset changes → rebuild ─────────────────────────────────────────
+  const handleFaceOffsets = useCallback((offsets: FaceOffsets) => {
+    setFaceOffsets(offsets);
+    if (imageData) reprocess(imageData, settings, presetTol ?? undefined, offsets, weldFaces);
+  }, [imageData, settings, presetTol, reprocess, weldFaces]);
+
+  const handleWeldChange = useCallback((weld: boolean) => {
+    setWeldFaces(weld);
+    if (imageData) reprocess(imageData, settings, presetTol ?? undefined, faceOffsets, weld);
+  }, [imageData, settings, presetTol, reprocess, faceOffsets]);
+
+  // ── Atlas (single-image) helpers ───────────────────────────────────────────
+
+  const handleAtlasImage = useCallback((file: File, atlas: ImageData) => {
+    setAtlasFile(file);
+    setAtlasImageData(atlas);
+    if (settings.faceMode === 'front') {
+      // Single face — no mapping needed, just use as front
+      setImageFile(file);
+      setImageData(atlas);
+      reprocess(atlas, settings, presetTol ?? undefined);
+    } else {
+      // Open mapper modal so user can assign tiles
+      setPendingAtlasData(atlas);
+      setShowAtlasMapper(true);
+    }
+  }, [settings, presetTol, reprocess]);
+
+  const handleAtlasConfirm = useCallback((faces: Partial<Record<'front'|'back'|'left'|'right'|'top'|'bottom', ImageData>>) => {
+    setShowAtlasMapper(false);
+    setPendingAtlasData(null);
+
+    const front  = faces.front  ?? null;
+    const back   = faces.back   ?? null;
+    const right  = faces.right  ?? null;
+    const left   = faces.left   ?? null;
+    const top    = faces.top    ?? null;
+    const bottom = faces.bottom ?? null;
+
+    if (!front) return;
+
+    setImageFile(atlasFile);   setImageData(front);
+    setBackImageFile(back ? atlasFile : null);    setBackImageData(back);
+    setRightSideFile(right ? atlasFile : null);   setRightSideData(right);
+    setLeftSideFile(left ? atlasFile : null);     setLeftSideData(left);
+    setTopSideFile(top ? atlasFile : null);       setTopSideData(top);
+    setBottomSideFile(bottom ? atlasFile : null); setBottomSideData(bottom);
+
+    // Auto-enable box mode when side images are provided — extrusion edges
+    // can't display flat side textures cleanly.
+    const hasLR = !!(right || left);
+    const activeSettings = (hasLR && !settings.boxMode)
+      ? { ...settings, boxMode: true }
+      : settings;
+    if (hasLR && !settings.boxMode) setSettings(activeSettings);
+
+    const m = extraMaps(activeSettings);
+    process(front, activeSettings, presetTol ?? undefined,
+      back ?? undefined, m.normal, m.roughness, m.metallic,
+      right ?? undefined, left ?? undefined, top ?? undefined, bottom ?? undefined);
+  }, [atlasFile, settings, presetTol, process, extraMaps]);
+
+  const handleBuildRig = useCallback(() => {
+    if (!mesh || !imageData) return;
+    try {
+      const fullMarkers = deriveFullMarkers(rigMarkers);
+      const skinnedMesh = buildSkinnedMesh(mesh, fullMarkers, settings.scale, imageData.width, imageData.height);
+      setMesh(skinnedMesh as unknown as THREE.Mesh);
+      setIsRigged(true);
+      setShowRigger(false);
+      setStatusText('Rig built — skeleton embedded in export');
+      setStatusKind('ok');
+    } catch (err) {
+      setStatusText((err as Error).message);
+      setStatusKind('error');
+    }
+  }, [mesh, imageData, rigMarkers, settings.scale]);
+
   const useBackImage = settings.faceMode !== 'front';
   const showLRSides  = settings.faceMode === 'front-back-lr' || settings.faceMode === 'front-back-lrtb';
   const showTBSides  = settings.faceMode === 'front-back-lrtb';
+
+  // Build data-URL thumbnails from uploaded ImageData for face editor cards
+  function imgDataToUrl(imgData: ImageData | null): string | undefined {
+    if (!imgData) return undefined;
+    const c = document.createElement('canvas');
+    c.width = imgData.width; c.height = imgData.height;
+    c.getContext('2d')!.putImageData(imgData, 0, 0);
+    return c.toDataURL();
+  }
+  const faceThumbnails: Partial<Record<import('../types').FaceName, string>> = {
+    front:  imgDataToUrl(imageData),
+    back:   imgDataToUrl(backImageData),
+    right:  imgDataToUrl(rightSideData),
+    left:   imgDataToUrl(leftSideData),
+    top:    imgDataToUrl(topSideData),
+    bottom: imgDataToUrl(bottomSideData),
+  };
+  // Remove undefined keys
+  (Object.keys(faceThumbnails) as import('../types').FaceName[]).forEach(k => {
+    if (!faceThumbnails[k]) delete faceThumbnails[k];
+  });
 
   return (
     <main className="app">
       <aside className="sidebar">
         <h1 className="logo">SpEx</h1>
 
-        <ImageUploader onImage={handleImage} currentFile={imageFile} label="Front / Both faces" />
+        <label className="face-mode-select">
+          Face Mode
+          <select
+            value={settings.faceMode}
+            onChange={(e) => {
+              const fm = e.target.value as import('../types').FaceMode;
+              // Auto-enable box mode for multi-sided modes — silhouette extrusion
+              // can't display side face images cleanly (edge-quad geometry).
+              const autoBox = fm === 'front-back-lr' || fm === 'front-back-lrtb';
+              handleSettings({ ...settings, faceMode: fm, boxMode: autoBox || settings.boxMode });
+            }}
+          >
+            <option value="front">Front only</option>
+            <option value="front-back">Front + Back</option>
+            <option value="front-back-lr">Front + Back + Left/Right</option>
+            <option value="front-back-lrtb">Front + Back + All sides</option>
+          </select>
+        </label>
 
-        {useBackImage && (
-          <ImageUploader onImage={handleBackImage} currentFile={backImageFile} label="Back face" />
+        {/* One image / Per face toggle — hidden in front-only (no meaningful split) */}
+        {settings.faceMode !== 'front' && (
+          <div className="texture-mode-toggle">
+            <button
+              className={textureMode === 'single' ? 'active' : ''}
+              onClick={() => setTextureMode('single')}
+            >One image</button>
+            <button
+              className={textureMode === 'multi' ? 'active' : ''}
+              onClick={() => setTextureMode('multi')}
+            >Per face</button>
+          </div>
         )}
 
-        {showLRSides && (
+        {textureMode === 'single' ? (
           <>
             <ImageUploader
-              onImage={(file, imgData) => handleSideImage('right', file, imgData)}
-              currentFile={rightSideFile}
-              label="Right side"
+              onImage={handleAtlasImage}
+              currentFile={atlasFile}
+              label={
+                settings.faceMode === 'front' ? 'Sprite image' :
+                settings.faceMode === 'front-back' ? 'Atlas (front | back)' :
+                settings.faceMode === 'front-back-lr' ? 'Atlas (front | back | right | left)' :
+                'Atlas (front | back | right | left | top | bottom)'
+              }
             />
-            <ImageUploader
-              onImage={(file, imgData) => handleSideImage('left', file, imgData)}
-              currentFile={leftSideFile}
-              label="Left side"
-            />
+            {settings.faceMode !== 'front' && atlasImageData && (
+              <button
+                className="readjust-btn"
+                onClick={() => { setPendingAtlasData(atlasImageData); setShowAtlasMapper(true); }}
+              >
+                🗺 Re-adjust face tiles
+              </button>
+            )}
           </>
-        )}
-
-        {showTBSides && (
+        ) : (
           <>
-            <ImageUploader
-              onImage={(file, imgData) => handleSideImage('top', file, imgData)}
-              currentFile={topSideFile}
-              label="Top side"
-            />
-            <ImageUploader
-              onImage={(file, imgData) => handleSideImage('bottom', file, imgData)}
-              currentFile={bottomSideFile}
-              label="Bottom side"
-            />
+            <ImageUploader onImage={handleImage} currentFile={imageFile} label="Front / Both faces" />
+
+            {useBackImage && (
+              <ImageUploader onImage={handleBackImage} currentFile={backImageFile} label="Back face" />
+            )}
+
+            {showLRSides && (
+              <>
+                <ImageUploader
+                  onImage={(file, imgData) => handleSideImage('right', file, imgData)}
+                  currentFile={rightSideFile}
+                  label="Right side"
+                />
+                <ImageUploader
+                  onImage={(file, imgData) => handleSideImage('left', file, imgData)}
+                  currentFile={leftSideFile}
+                  label="Left side"
+                />
+              </>
+            )}
+
+            {showTBSides && (
+              <>
+                <ImageUploader
+                  onImage={(file, imgData) => handleSideImage('top', file, imgData)}
+                  currentFile={topSideFile}
+                  label="Top side"
+                />
+                <ImageUploader
+                  onImage={(file, imgData) => handleSideImage('bottom', file, imgData)}
+                  currentFile={bottomSideFile}
+                  label="Bottom side"
+                />
+              </>
+            )}
           </>
         )}
 
@@ -354,6 +581,12 @@ export default function Home() {
           settings={settings}
           onChange={handleSettings}
           disabled={statusKind === 'working'}
+          imageWidth={imageData?.width}
+          hasMesh={!!mesh}
+          isRigged={isRigged}
+          playWalk={playWalk}
+          onOpenRigger={() => setShowRigger(true)}
+          onWalkChange={setPlayWalk}
         />
 
         <TextureMapsPanel
@@ -394,7 +627,14 @@ export default function Home() {
       </aside>
 
       <section className="viewport">
-        <ThreeViewport mesh={mesh} outline={outline} />
+        <ThreeViewport mesh={mesh} outline={outline} cameraResetKey={cameraResetKey} playWalk={playWalk} />
+        <button
+          className="reset-camera-btn"
+          title="Reset camera"
+          onClick={() => setCameraResetKey(k => k + 1)}
+        >
+          ⟳ Camera
+        </button>
         {showDebug && imageData && contour && (
           <ContourDebug imageData={imageData} contour={contour} />
         )}
@@ -402,6 +642,39 @@ export default function Home() {
           Drag to orbit · Scroll to zoom · Right-drag to pan
         </div>
       </section>
+
+      {settings.boxMode && (
+        <FaceEditorPanel
+          faceMode={settings.faceMode}
+          offsets={faceOffsets}
+          thumbnails={faceThumbnails}
+          onChange={handleFaceOffsets}
+          disabled={statusKind === 'working'}
+          weldFaces={weldFaces}
+          onWeldChange={handleWeldChange}
+        />
+      )}
+
+      {showAtlasMapper && pendingAtlasData && (
+        <AtlasMapperModal
+          imageData={pendingAtlasData}
+          faceMode={settings.faceMode}
+          onConfirm={handleAtlasConfirm}
+          onClose={() => { setShowAtlasMapper(false); setPendingAtlasData(null); }}
+        />
+      )}
+
+      {showRigger && imageData && (
+        <RiggerModal
+          imageData={imageData}
+          markers={rigMarkers}
+          onMarkersChange={setRigMarkers}
+          useSymmetry={rigSymmetry}
+          onSymmetryChange={setRigSymmetry}
+          onBuild={handleBuildRig}
+          onClose={() => setShowRigger(false)}
+        />
+      )}
     </main>
   );
 }

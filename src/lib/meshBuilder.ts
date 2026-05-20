@@ -3,6 +3,7 @@ import earcut from 'earcut';
 import type { ContourResult, Contour2D } from './contourExtractor';
 import type { SideMode, FaceMode, FaceOffsets } from '../types';
 import { makeNormalMap } from './normalMapGen';
+import type { BoxFillMode } from '../types';
 
 export interface MeshStats {
   triangles: number;
@@ -16,6 +17,8 @@ export interface MeshOptions {
   scale: number;
   sideMode: SideMode;
   sideColor: string;
+  boxFillColor?: string;
+  boxFillMode?: BoxFillMode;
   faceMode?: FaceMode;
   // Procedural normal map (Sobel) — used when no uploadedNormalMap
   normalMapEnabled: boolean;
@@ -189,8 +192,8 @@ function removeWhiteBackground(canvas: HTMLCanvasElement): void {
   ctx.putImageData(id, 0, 0);
 }
 
-/** Crops ImageData to its content bounding box, then removes white background. */
-function cropContent(img: ImageData): { canvas: HTMLCanvasElement; w: number; h: number } {
+/** Crops ImageData to its content bounding box, optionally removes white background. */
+function cropContent(img: ImageData, removeWhiteBg = true): { canvas: HTMLCanvasElement; w: number; h: number } {
   const { x0, y0, x1, y1 } = contentBounds(img);
   const w = x1 - x0, h = y1 - y0;
   const src = document.createElement('canvas');
@@ -199,7 +202,7 @@ function cropContent(img: ImageData): { canvas: HTMLCanvasElement; w: number; h:
   const dst = document.createElement('canvas');
   dst.width = w; dst.height = h;
   dst.getContext('2d')!.drawImage(src, x0, y0, w, h, 0, 0, w, h);
-  removeWhiteBackground(dst);
+  if (removeWhiteBg) removeWhiteBackground(dst);
   return { canvas: dst, w, h };
 }
 
@@ -207,6 +210,96 @@ function canvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas);
   tex.flipY = false;
   return tex;
+}
+
+function fillTransparentWithColor(canvas: HTMLCanvasElement, colorHex: string): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { width, height } = canvas;
+  const id = ctx.getImageData(0, 0, width, height);
+  const d = id.data;
+  const c = new THREE.Color(colorHex);
+  const fr = Math.round(c.r * 255);
+  const fg = Math.round(c.g * 255);
+  const fb = Math.round(c.b * 255);
+
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3] / 255;
+    if (a >= 1) continue;
+    // Composite source over fill color, then force opaque.
+    d[i]     = Math.round(d[i] * a + fr * (1 - a));
+    d[i + 1] = Math.round(d[i + 1] * a + fg * (1 - a));
+    d[i + 2] = Math.round(d[i + 2] * a + fb * (1 - a));
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+// Extend nearest opaque texels into transparent regions (multi-source BFS).
+function fillTransparentByEdgeStretch(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { width, height } = canvas;
+  const id = ctx.getImageData(0, 0, width, height);
+  const d = id.data;
+  const n = width * height;
+
+  const src = new Int32Array(n);
+  src.fill(-1);
+  const q: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    if (d[i * 4 + 3] > 0) {
+      src[i] = i;
+      q.push(i);
+    }
+  }
+  if (q.length === 0) return;
+
+  let head = 0;
+  while (head < q.length) {
+    const p = q[head++];
+    const s = src[p];
+    const x = p % width;
+    const y = (p / width) | 0;
+
+    const tryPush = (ni: number) => {
+      if (src[ni] !== -1) return;
+      src[ni] = s;
+      q.push(ni);
+    };
+
+    if (x > 0) tryPush(p - 1);
+    if (x < width - 1) tryPush(p + 1);
+    if (y > 0) tryPush(p - width);
+    if (y < height - 1) tryPush(p + width);
+  }
+
+  for (let i = 0; i < n; i++) {
+    const a = d[i * 4 + 3];
+    if (a >= 255) continue;
+    const s = src[i];
+    if (s < 0) continue;
+    d[i * 4] = d[s * 4];
+    d[i * 4 + 1] = d[s * 4 + 1];
+    d[i * 4 + 2] = d[s * 4 + 2];
+    d[i * 4 + 3] = 255;
+  }
+
+  ctx.putImageData(id, 0, 0);
+}
+
+function fillTransparentPixels(
+  canvas: HTMLCanvasElement,
+  mode: BoxFillMode,
+  colorHex: string,
+): void {
+  if (mode === 'keep-transparent') return;
+  if (mode === 'flat-color') {
+    fillTransparentWithColor(canvas, colorHex);
+    return;
+  }
+  fillTransparentByEdgeStretch(canvas);
 }
 
 function makeTexture(imageData: ImageData): THREE.CanvasTexture {
@@ -350,6 +443,7 @@ export function buildBoxMesh(
 ): { mesh: THREE.Mesh; stats: MeshStats } {
   const {
     depth, scale,
+    sideMode, sideColor, boxFillColor, boxFillMode = 'edge-stretch',
     backImageData, sideImages,
     normalMapEnabled, normalMapStrength,
     uploadedNormalMap, uploadedRoughnessMap, uploadedMetallicMap,
@@ -359,12 +453,22 @@ export function buildBoxMesh(
 
   // Crop every face image to its content bounding box (removes white/alpha background).
   // Use cropped dimensions for geometry so the box fits the actual artwork, not the canvas.
-  const frontCrop = cropContent(imageData);
-  const backCrop   = backImageData     ? cropContent(backImageData)     : null;
-  const rightCrop  = sideImages?.right ? cropContent(sideImages.right)  : null;
-  const leftCrop   = sideImages?.left  ? cropContent(sideImages.left)   : null;
-  const topCrop    = sideImages?.top   ? cropContent(sideImages.top)    : null;
-  const bottomCrop = sideImages?.bottom ? cropContent(sideImages.bottom) : null;
+  // For box-face tiles, keep border pixels intact (no white-background removal),
+  // otherwise textured walls can get accidental transparent slits on edges.
+  const frontCrop = cropContent(imageData, false);
+  const backCrop   = backImageData      ? cropContent(backImageData, false)      : null;
+  const rightCrop  = sideImages?.right  ? cropContent(sideImages.right, false)   : null;
+  const leftCrop   = sideImages?.left   ? cropContent(sideImages.left, false)    : null;
+  const topCrop    = sideImages?.top    ? cropContent(sideImages.top, false)     : null;
+  const bottomCrop = sideImages?.bottom ? cropContent(sideImages.bottom, false)  : null;
+
+  const fillColor = boxFillColor ?? sideColor;
+  fillTransparentPixels(frontCrop.canvas, boxFillMode, fillColor);
+  if (backCrop) fillTransparentPixels(backCrop.canvas, boxFillMode, fillColor);
+  if (rightCrop) fillTransparentPixels(rightCrop.canvas, boxFillMode, fillColor);
+  if (leftCrop) fillTransparentPixels(leftCrop.canvas, boxFillMode, fillColor);
+  if (topCrop) fillTransparentPixels(topCrop.canvas, boxFillMode, fillColor);
+  if (bottomCrop) fillTransparentPixels(bottomCrop.canvas, boxFillMode, fillColor);
 
   // Base coordinate system from the front content bounds
   const maxDim = Math.max(frontCrop.w, frontCrop.h);
@@ -526,8 +630,12 @@ export function buildBoxMesh(
     return new THREE.MeshStandardMaterial(p);
   };
 
-  const blankMat = new THREE.MeshStandardMaterial({
-    color: 0xcccccc, side: THREE.DoubleSide, roughness: 0.9, metalness: 0,
+  // Fallback for missing side-face textures: honor user sideColor by default.
+  const fallbackSideMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(boxFillColor ?? sideColor),
+    side: THREE.DoubleSide,
+    roughness: 0.9,
+    metalness: 0,
   });
 
   // Panel w/h in world units — used for cover UV when crop aspect ≠ panel aspect
@@ -544,13 +652,41 @@ export function buildBoxMesh(
     return tex;
   };
 
+  // In box mode, Side Texture selector must always drive side faces:
+  // - image: use per-face side textures when available
+  // - edge: approximate with front texture projection
+  // - flat: force sideColor
+  const sideMatFor = (
+    crop: { canvas: HTMLCanvasElement; w: number; h: number } | null,
+    panelW: number,
+    panelH: number,
+  ): THREE.MeshStandardMaterial => {
+    if (sideMode === 'flat') {
+      return new THREE.MeshStandardMaterial({
+        color: new THREE.Color(sideColor),
+        side: THREE.DoubleSide,
+        roughness: 0.9,
+        metalness: 0,
+      });
+    }
+    if (sideMode === 'edge') {
+      const tex = frontTex.clone();
+      tex.needsUpdate = true;
+      coverTexture(tex, panelW, panelH, frontCrop.w, frontCrop.h);
+      return buildMat(tex);
+    }
+    // sideMode === 'image'
+    const t = cropTex(crop, panelW, panelH);
+    return t ? buildMat(t) : fallbackSideMat;
+  };
+
   const materials: THREE.MeshStandardMaterial[] = [
     buildMat(frontTex, true),                                                             // 0 front
     buildMat(cropTex(backCrop,   fbW, fbH) ?? frontTex),                                 // 1 back
-    cropTex(rightCrop,  lrW, lrH) ? buildMat(cropTex(rightCrop,  lrW, lrH)!)  : blankMat, // 2 right
-    cropTex(leftCrop,   lrW, lrH) ? buildMat(cropTex(leftCrop,   lrW, lrH)!)  : blankMat, // 3 left
-    cropTex(topCrop,    tbW, tbH) ? buildMat(cropTex(topCrop,    tbW, tbH)!)  : blankMat,  // 4 top
-    cropTex(bottomCrop, tbW, tbH) ? buildMat(cropTex(bottomCrop, tbW, tbH)!)  : blankMat,  // 5 bottom
+    sideMatFor(rightCrop,  lrW, lrH), // 2 right
+    sideMatFor(leftCrop,   lrW, lrH), // 3 left
+    sideMatFor(topCrop,    tbW, tbH), // 4 top
+    sideMatFor(bottomCrop, tbW, tbH), // 5 bottom
   ];
 
   const mesh = new THREE.Mesh(geo, materials);

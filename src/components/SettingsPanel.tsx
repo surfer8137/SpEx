@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import type { AppSettings, FaceMode } from '../types';
+import { RIG_TEST_ANIMATIONS, type RigTestAnimationId } from '../lib/walkAnimation';
 
 interface Props {
   settings: AppSettings;
@@ -9,9 +10,12 @@ interface Props {
   imageWidth?: number;
   hasMesh?: boolean;
   isRigged?: boolean;
-  playWalk?: boolean;
+  selectedAnimation?: RigTestAnimationId;
+  isAnimationPlaying?: boolean;
   onOpenRigger?: () => void;
-  onWalkChange?: (v: boolean) => void;
+  onAnimationChange?: (id: RigTestAnimationId) => void;
+  onAnimationPlay?: () => void;
+  onAnimationStop?: () => void;
 }
 
 // ── Reusable slider with editable number input + min/max labels ───────────────
@@ -46,6 +50,7 @@ function SliderField({
         <input
           type="number"
           className="val-input"
+          title={`Adjust ${label}; this changes model geometry or shading intensity.`}
           value={draft ?? fmt(value)}
           min={min}
           max={max}
@@ -66,6 +71,7 @@ function SliderField({
       </div>
       <input
         type="range"
+        title={`Slide ${label}; this changes model geometry or shading intensity.`}
         min={min}
         max={max}
         step={step}
@@ -92,7 +98,20 @@ function Section({ title, open = false, children }: { title: string; open?: bool
 }
 
 // ── Main panel ────────────────────────────────────────────────────────────────
-export default function SettingsPanel({ settings, onChange, disabled, imageWidth, hasMesh, isRigged, playWalk, onOpenRigger, onWalkChange }: Props) {
+export default function SettingsPanel({
+  settings,
+  onChange,
+  disabled,
+  imageWidth,
+  hasMesh,
+  isRigged,
+  selectedAnimation = 'walk',
+  isAnimationPlaying = false,
+  onOpenRigger,
+  onAnimationChange,
+  onAnimationPlay,
+  onAnimationStop,
+}: Props) {
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
@@ -105,6 +124,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
         <label>
           Background Mode
           <select
+            title="Choose background detection; affects which pixels become model geometry."
             value={settings.backgroundMode}
             onChange={(e) => update('backgroundMode', e.target.value as AppSettings['backgroundMode'])}
             disabled={disabled}
@@ -150,6 +170,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
           <label className="label-row">
             <input
               type="checkbox"
+              title="Build a 6-face box from face images; switches from silhouette extrusion to panel model."
               checked={settings.boxMode}
               onChange={(e) => update('boxMode', e.target.checked)}
               disabled={disabled}
@@ -170,6 +191,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
         <label className="label-row">
           <input
             type="checkbox"
+            title="Enable 360° lathe; revolves profile into a radial model."
             checked={settings.latheMode}
             onChange={(e) => update('latheMode', e.target.checked)}
             disabled={disabled}
@@ -190,6 +212,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
             <label className="label-row">
               <input
                 type="checkbox"
+                title="Close top and bottom caps; seals the lathed model."
                 checked={settings.latheClosed}
                 onChange={(e) => update('latheClosed', e.target.checked)}
                 disabled={disabled}
@@ -200,6 +223,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
             <label className="label-row">
               <input
                 type="checkbox"
+                title="Stretch texture to cover the full lathe surface."
                 checked={settings.latheStretchTexture}
                 onChange={(e) => update('latheStretchTexture', e.target.checked)}
                 disabled={disabled}
@@ -226,6 +250,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
           <label>
             Side Texture
             <select
+              title="Select lateral texturing mode; changes side-face appearance."
               value={settings.sideMode}
               onChange={(e) => update('sideMode', e.target.value as AppSettings['sideMode'])}
               disabled={disabled}
@@ -241,11 +266,43 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
               Side Color
               <input
                 type="color"
+                title="Set flat side color; paints side faces with a solid color."
                 value={settings.sideColor}
                 onChange={(e) => update('sideColor', e.target.value)}
                 disabled={disabled}
               />
             </label>
+          )}
+
+          {settings.boxMode && (
+            <>
+              <label>
+                Gap Fill Mode
+                <select
+                  title="Choose how transparent texels are filled; changes gap appearance on box faces."
+                  value={settings.boxFillMode}
+                  onChange={(e) => update('boxFillMode', e.target.value as AppSettings['boxFillMode'])}
+                  disabled={disabled}
+                >
+                  <option value="edge-stretch">Edge stretch</option>
+                  <option value="flat-color">Flat color</option>
+                  <option value="keep-transparent">Keep transparent</option>
+                </select>
+              </label>
+
+              {settings.boxFillMode === 'flat-color' && (
+                <label>
+                  Gap Fill Color
+                  <input
+                    type="color"
+                    title="Set fill color used for transparent texels in flat-color mode."
+                    value={settings.boxFillColor}
+                    onChange={(e) => update('boxFillColor', e.target.value)}
+                    disabled={disabled}
+                  />
+                </label>
+              )}
+            </>
           )}
         </Section>
       )}
@@ -255,6 +312,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
         <label className="label-row">
           <input
             type="checkbox"
+            title="Show outer contour lines around the model."
             checked={settings.outlineEnabled}
             onChange={(e) => update('outlineEnabled', e.target.checked)}
             disabled={disabled}
@@ -268,6 +326,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
               Outline Color
               <input
                 type="color"
+                title="Set contour line color on the model."
                 value={settings.outlineColor}
                 onChange={(e) => update('outlineColor', e.target.value)}
                 disabled={disabled}
@@ -286,6 +345,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
         <label className="label-row">
           <input
             type="checkbox"
+            title="Generate procedural normal map from texture luminance; adds lighting detail."
             checked={settings.normalMapEnabled}
             onChange={(e) => update('normalMapEnabled', e.target.checked)}
             disabled={disabled}
@@ -308,6 +368,7 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
             <label className="label-row">
               <input
                 type="checkbox"
+                title="Displace geometry from texture luminance; adds real depth to model surface."
                 checked={settings.reliefEnabled}
                 onChange={(e) => update('reliefEnabled', e.target.checked)}
                 disabled={disabled}
@@ -329,27 +390,39 @@ export default function SettingsPanel({ settings, onChange, disabled, imageWidth
       </Section>
 
       {/* ── Rigger ─────────────────────────────────── */}
-      <Section title="🦴 Rigger">
+      <Section title="🦴 Rigger (WIP)">
         <button
           className="rigger-open-btn"
+          title="Open rigging tool; adds skeleton and skinning deformation to the model."
           disabled={!hasMesh}
           onClick={onOpenRigger}
         >
           Open Rigger…
         </button>
         {isRigged && (
-          <label className="label-row" style={{ marginTop: '0.5rem' }}>
-            <input
-              type="checkbox"
-              checked={playWalk}
-              onChange={e => onWalkChange?.(e.target.checked)}
-            />
-            🚶 Walk animation preview
-          </label>
+          <>
+            <label style={{ marginTop: '0.6rem' }}>
+              Test Animation
+              <select
+                title="Choose preview animation; changes how the rigged model moves."
+                value={selectedAnimation}
+                onChange={(e) => onAnimationChange?.(e.target.value as RigTestAnimationId)}
+                disabled={disabled}
+              >
+                {RIG_TEST_ANIMATIONS.map((anim) => (
+                  <option key={anim.id} value={anim.id}>{anim.label}</option>
+                ))}
+              </select>
+            </label>
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+              <button type="button" title="Play selected animation on the rigged model." onClick={onAnimationPlay} disabled={disabled || isAnimationPlaying}>Play</button>
+              <button type="button" title="Stop animation and reset the model pose to frame 0." onClick={onAnimationStop} disabled={disabled || !isAnimationPlaying}>Stop</button>
+            </div>
+          </>
         )}
         {!isRigged && hasMesh && (
           <p className="section-hint" style={{ marginTop: '0.4rem' }}>
-            Build a rig first to preview animations.
+            Build a rig first to preview animations. For cohesive bends in box mode, keep "Weld faces" enabled.
           </p>
         )}
       </Section>

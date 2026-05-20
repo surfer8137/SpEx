@@ -74,6 +74,7 @@ function DragPad({
     <div
       ref={padRef}
       className="fe-pad"
+      title="Drag to slide this face within its plane; changes panel alignment on the model."
       style={{ width: SIZE, height: SIZE, opacity: disabled ? 0.4 : 1 }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -105,6 +106,7 @@ function AxisInput({
       <input
         className="fe-axis-input"
         type="number"
+        title={`Adjust ${label}; updates this face transform on the model.`}
         min={-2} max={2} step={0.001}
         value={value.toFixed(3)}
         disabled={disabled}
@@ -148,7 +150,7 @@ function FaceCard({
       <div className="fe-card-header">
         <span>{meta.emoji} {meta.label}</span>
         {hasOffset && (
-          <button className="fe-reset-btn" onClick={reset} title="Reset offsets">↺</button>
+          <button className="fe-reset-btn" onClick={reset} title="Reset this face offsets to default model alignment.">↺</button>
         )}
       </div>
 
@@ -171,6 +173,7 @@ function FaceCard({
             <span className="fe-depth-label">↕ {meta.depth.toUpperCase()} (depth)</span>
             <input
               type="range"
+              title={`Adjust ${meta.depth.toUpperCase()} depth; pushes/pulls this face on the model.`}
               min={-0.5} max={0.5} step={0.005}
               value={depth}
               disabled={disabled}
@@ -236,7 +239,7 @@ export default function FaceEditorPanel({
       <div className="fe-header">
         <h3>Face Editor</h3>
         {anyOffset && (
-          <button className="fe-reset-all-btn" onClick={resetAll}>Reset all</button>
+          <button className="fe-reset-all-btn" title="Reset all face offsets to restore default model shape." onClick={resetAll}>Reset all</button>
         )}
       </div>
 
@@ -244,6 +247,7 @@ export default function FaceEditorPanel({
       <label className="fe-weld-toggle">
         <input
           type="checkbox"
+          title="Keep adjacent faces welded so model edges stay closed without gaps."
           checked={weldFaces}
           onChange={e => onWeldChange(e.target.checked)}
         />

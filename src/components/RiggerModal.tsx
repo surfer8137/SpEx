@@ -89,7 +89,7 @@ export default function RiggerModal({
         {/* ── Header ── */}
         <div className="rigger-header">
           <span>AUTO-RIGGER</span>
-          <button className="rigger-close" onClick={onClose}>✕</button>
+          <button className="rigger-close" title="Close rigger without changing current model rig state." onClick={onClose}>✕</button>
         </div>
 
         {/* ── Body ── */}
@@ -145,6 +145,7 @@ export default function RiggerModal({
                   const meta = MIXAMO_META[jointId];
                   return (
                     <g key={jointId}>
+                      <title>{meta.label || jointId.replace('_', ' ')}</title>
                       <circle
                         cx={`${m.x * 100}%`} cy={`${m.y * 100}%`}
                         r={11}
@@ -189,13 +190,13 @@ export default function RiggerModal({
                         <div
                           className="joint-circle"
                           style={{ borderColor: meta.color }}
-                          title={pairId.replace('_', ' ')}
+                          title={`${pairId.replace('_', ' ')} marker; affects that limb deformation.`}
                         />
                       )}
                       <div
                         className="joint-circle"
                         style={{ borderColor: meta.color, background: meta.color + '33' }}
-                        title={jointId.replace('_', ' ')}
+                        title={`${jointId.replace('_', ' ')} marker; affects local rig bending.`}
                       />
                     </div>
                   </div>
@@ -208,6 +209,7 @@ export default function RiggerModal({
             <label className="rigger-symmetry">
               <input
                 type="checkbox"
+                title="Mirror left/right marker moves to keep symmetric rig deformation."
                 checked={useSymmetry}
                 onChange={e => onSymmetryChange(e.target.checked)}
               />
@@ -215,8 +217,8 @@ export default function RiggerModal({
             </label>
 
             <div className="rigger-actions">
-              <button className="rigger-build-btn" onClick={onBuild}>Build Rig</button>
-              <button className="rigger-reset-btn" onClick={handleReset}>Reset Markers</button>
+              <button className="rigger-build-btn" title="Build skeleton and skin weights from current markers; enables model animation." onClick={onBuild}>Build Rig</button>
+              <button className="rigger-reset-btn" title="Reset markers to default positions; restores default rig layout." onClick={handleReset}>Reset Markers</button>
             </div>
           </div>
 

@@ -2,16 +2,17 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createWalkClip } from '../lib/walkAnimation';
+import { createRigTestClip, type RigTestAnimationId } from '../lib/walkAnimation';
 
 interface Props {
   mesh: THREE.Mesh | null;
   outline: THREE.Group | null;
   cameraResetKey?: number;
-  playWalk?: boolean;
+  playAnimation?: boolean;
+  animationId?: RigTestAnimationId;
 }
 
-export default function ThreeViewport({ mesh, outline, cameraResetKey, playWalk }: Props) {
+export default function ThreeViewport({ mesh, outline, cameraResetKey, playAnimation, animationId = 'walk' }: Props) {
   const mountRef    = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef    = useRef<THREE.Scene | null>(null);
@@ -23,11 +24,19 @@ export default function ThreeViewport({ mesh, outline, cameraResetKey, playWalk 
   const hasAutoFit  = useRef(false);
   const mixerRef    = useRef<THREE.AnimationMixer | null>(null);
   const clockRef    = useRef(new THREE.Clock());
-  const walkClipRef = useRef<THREE.AnimationClip | null>(null);
-  const playWalkRef = useRef(false);
+  const clipCacheRef = useRef<Partial<Record<RigTestAnimationId, THREE.AnimationClip>>>({});
+  const currentActionRef = useRef<THREE.AnimationAction | null>(null);
+  const playAnimationRef = useRef(false);
 
-  // Keep playWalkRef in sync so the animate loop can read it without re-subscribing
-  useEffect(() => { playWalkRef.current = playWalk ?? false; }, [playWalk]);
+  // Keep ref in sync so the animate loop can read it without re-subscribing
+  useEffect(() => { playAnimationRef.current = playAnimation ?? false; }, [playAnimation]);
+
+  // Stop = reset current clip to frame 0 for consistent testing.
+  useEffect(() => {
+    if (playAnimation) return;
+    currentActionRef.current?.reset();
+    mixerRef.current?.update(0);
+  }, [playAnimation]);
 
   const fitCamera = () => {
     const m = meshRef.current;
@@ -80,7 +89,7 @@ export default function ThreeViewport({ mesh, outline, cameraResetKey, playWalk 
     const animate = () => {
       animRef.current = requestAnimationFrame(animate);
       const delta = clockRef.current.getDelta();
-      if (mixerRef.current && playWalkRef.current) {
+      if (mixerRef.current && playAnimationRef.current) {
         mixerRef.current.update(delta);
       }
       controls.update();
@@ -140,12 +149,15 @@ export default function ThreeViewport({ mesh, outline, cameraResetKey, playWalk 
       if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) {
         const mixer = new THREE.AnimationMixer(mesh);
         mixerRef.current = mixer;
-        // Lazy-create the walk clip
-        if (!walkClipRef.current) walkClipRef.current = createWalkClip();
-        const action = mixer.clipAction(walkClipRef.current);
+
+        // Start with selected animation; animate loop only advances when playAnimationRef.current is true.
+        const clip = clipCacheRef.current[animationId] ?? createRigTestClip(animationId);
+        clipCacheRef.current[animationId] = clip;
+        const action = mixer.clipAction(clip);
         action.setLoop(THREE.LoopRepeat, Infinity);
+        action.reset();
         action.play();
-        // Start paused — animate loop only advances when playWalkRef.current is true
+        currentActionRef.current = action;
       }
 
       if (!hasAutoFit.current) {
@@ -154,6 +166,28 @@ export default function ThreeViewport({ mesh, outline, cameraResetKey, playWalk 
       }
     }
   }, [mesh]);
+
+  // ── Swap selected animation on current skinned mesh ──────────────────────
+  useEffect(() => {
+    const mixer = mixerRef.current;
+    const m = meshRef.current;
+    if (!mixer || !m || !(m as THREE.SkinnedMesh).isSkinnedMesh) return;
+
+    const clip = clipCacheRef.current[animationId] ?? createRigTestClip(animationId);
+    clipCacheRef.current[animationId] = clip;
+
+    const prev = currentActionRef.current;
+    const next = mixer.clipAction(clip);
+    if (prev === next) return;
+
+    if (prev) {
+      prev.stop();
+    }
+    next.reset();
+    next.setLoop(THREE.LoopRepeat, Infinity);
+    next.play();
+    currentActionRef.current = next;
+  }, [animationId]);
 
   // ── Explicit camera reset ─────────────────────────────────────────────────
   useEffect(() => {

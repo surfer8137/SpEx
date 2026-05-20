@@ -33,9 +33,10 @@ export default function ImageUploader({ onImage, currentFile, label }: Props) {
 
   return (
     <div>
-      {label && <p className="uploader-label">{label}</p>}
+      {label && <p className="uploader-label" title={`Select source image for ${label}; this updates the mapped texture on that model face.`}>{label}</p>}
     <div
       className="uploader"
+      title={currentFile ? 'Click or drop to replace this image; the model face texture updates immediately.' : 'Click or drop an image; this texture will be applied to the model.'}
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
       onClick={() => inputRef.current?.click()}
@@ -44,6 +45,7 @@ export default function ImageUploader({ onImage, currentFile, label }: Props) {
         ref={inputRef}
         type="file"
         accept="image/png,image/*"
+        title="Select an image file to change the model texture."
         style={{ display: 'none' }}
         onChange={(e) => {
         if (e.target.files?.[0]) {

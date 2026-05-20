@@ -64,12 +64,13 @@ function MapRow({
         <button
           className="map-btn"
           disabled={disabled}
+          title={file ? `Replace ${label}; this changes model shading response.` : `Add ${label}; this modifies how light interacts with the model.`}
           onClick={() => inputRef.current?.click()}
         >
           {file ? '↺' : '+'}
         </button>
         {file && (
-          <button className="map-btn map-btn-clear" disabled={disabled} onClick={() => onClear(kind)}>
+          <button className="map-btn map-btn-clear" title={`Remove ${label}; model shading returns to default for this channel.`} disabled={disabled} onClick={() => onClear(kind)}>
             ✕
           </button>
         )}
@@ -78,6 +79,7 @@ function MapRow({
         ref={inputRef}
         type="file"
         accept="image/*"
+        title={`Select ${label}; this affects the material appearance on the model.`}
         style={{ display: 'none' }}
         onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
       />

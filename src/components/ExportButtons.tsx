@@ -55,12 +55,13 @@ export default function ExportButtons({ mesh }: Props) {
   return (
     <div className="export-buttons">
       <div className="export-col">
-        <button disabled={!mesh} onClick={() => mesh && exportGLB(mesh)}>
+        <button title="Export the current model as GLB with mesh, materials, and textures." disabled={!mesh} onClick={() => mesh && exportGLB(mesh)}>
           Export GLB
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.glb)}</span>}
         <a
           className="export-hint-link"
+          title="Open GLTFast docs for importing this exported GLB into Unity."
           href="https://github.com/atteneder/glTFast"
           target="_blank"
           rel="noopener noreferrer"
@@ -69,7 +70,7 @@ export default function ExportButtons({ mesh }: Props) {
         </a>
       </div>
       <div className="export-col">
-        <button disabled={!mesh} onClick={() => mesh && exportOBJ(mesh)}>
+        <button title="Export the current model as OBJ (geometry-focused workflow)." disabled={!mesh} onClick={() => mesh && exportOBJ(mesh)}>
           Export OBJ
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.obj)}</span>}

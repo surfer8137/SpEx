@@ -16,6 +16,7 @@ import { buildSkinnedMesh } from '../lib/rigBuilder';
 import type { AppSettings, FaceOffsets } from '../types';
 import type { MixamoMarkers } from '../types/rig';
 import { DEFAULT_MIXAMO_MARKERS, deriveFullMarkers } from '../types/rig';
+import type { RigTestAnimationId } from '../lib/walkAnimation';
 
 const ThreeViewport = dynamic(() => import('../components/ThreeViewport'), {
   ssr: false,
@@ -31,6 +32,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   backgroundMode: 'auto',
   sideMode: 'image',
   sideColor: '#888888',
+  boxFillColor: '#5f5f5f',
+  boxFillMode: 'edge-stretch',
   faceMode: 'front',
   outlineEnabled: false,
   outlineColor: '#000000',
@@ -89,12 +92,13 @@ export default function Home() {
   const [showAtlasMapper, setShowAtlasMapper] = useState(false);
   // Face Editor state
   const [faceOffsets, setFaceOffsets] = useState<FaceOffsets>({});
-  const [weldFaces, setWeldFaces] = useState(false);
+  const [weldFaces, setWeldFaces] = useState(true);
   // Camera reset key — increment to trigger fit
   const [cameraResetKey, setCameraResetKey] = useState(0);
-  // Walk preview state
+  // Rig animation preview state
   const [isRigged, setIsRigged] = useState(false);
-  const [playWalk, setPlayWalk] = useState(false);
+  const [selectedAnimation, setSelectedAnimation] = useState<RigTestAnimationId>('walk');
+  const [playAnimation, setPlayAnimation] = useState(false);
   // Rigger state
   const [showRigger, setShowRigger] = useState(false);
   const [rigMarkers, setRigMarkers] = useState<MixamoMarkers>(DEFAULT_MIXAMO_MARKERS);
@@ -149,6 +153,8 @@ export default function Home() {
             scale: s.scale,
             sideMode: s.sideMode,
             sideColor: s.sideColor,
+            boxFillColor: s.boxFillColor,
+            boxFillMode: s.boxFillMode,
             faceMode: s.faceMode,
             normalMapEnabled: s.normalMapEnabled,
             normalMapStrength: s.normalMapStrength,
@@ -227,7 +233,7 @@ export default function Home() {
         setMeshStats(stats);
         // New geometry → rig is gone
         setIsRigged(false);
-        setPlayWalk(false);
+        setPlayAnimation(false);
         setStatusText(`${stats.triangles} tris · ${stats.holes} holes`);
         setStatusKind('ok');
       } catch (err) {
@@ -439,11 +445,21 @@ export default function Home() {
 
   const handleBuildRig = useCallback(() => {
     if (!mesh || !imageData) return;
+    // For box-mode characters, force welded faces before rigging so animation
+    // does not open gaps between panels.
+    if (settings.boxMode && !weldFaces) {
+      setWeldFaces(true);
+      reprocess(imageData, settings, presetTol ?? undefined, faceOffsets, true);
+      setStatusText('Weld faces enabled for rigging. Build Rig again.');
+      setStatusKind('ok');
+      return;
+    }
     try {
       const fullMarkers = deriveFullMarkers(rigMarkers);
       const skinnedMesh = buildSkinnedMesh(mesh, fullMarkers, settings.scale, imageData.width, imageData.height);
       setMesh(skinnedMesh as unknown as THREE.Mesh);
       setIsRigged(true);
+      setPlayAnimation(false);
       setShowRigger(false);
       setStatusText('Rig built — skeleton embedded in export');
       setStatusKind('ok');
@@ -451,7 +467,7 @@ export default function Home() {
       setStatusText((err as Error).message);
       setStatusKind('error');
     }
-  }, [mesh, imageData, rigMarkers, settings.scale]);
+  }, [mesh, imageData, rigMarkers, settings, weldFaces, reprocess, presetTol, faceOffsets]);
 
   const useBackImage = settings.faceMode !== 'front';
   const showLRSides  = settings.faceMode === 'front-back-lr' || settings.faceMode === 'front-back-lrtb';
@@ -486,6 +502,7 @@ export default function Home() {
         <label className="face-mode-select">
           Face Mode
           <select
+            title="Choose how many model faces are generated and textured."
             value={settings.faceMode}
             onChange={(e) => {
               const fm = e.target.value as import('../types').FaceMode;
@@ -507,10 +524,12 @@ export default function Home() {
           <div className="texture-mode-toggle">
             <button
               className={textureMode === 'single' ? 'active' : ''}
+              title="Use one atlas image and map its tiles to model faces."
               onClick={() => setTextureMode('single')}
             >One image</button>
             <button
               className={textureMode === 'multi' ? 'active' : ''}
+              title="Use separate images per face to control model texturing."
               onClick={() => setTextureMode('multi')}
             >Per face</button>
           </div>
@@ -531,6 +550,7 @@ export default function Home() {
             {settings.faceMode !== 'front' && atlasImageData && (
               <button
                 className="readjust-btn"
+                title="Re-map atlas tiles; changes which texture goes to each model face."
                 onClick={() => { setPendingAtlasData(atlasImageData); setShowAtlasMapper(true); }}
               >
                 🗺 Re-adjust face tiles
@@ -584,9 +604,12 @@ export default function Home() {
           imageWidth={imageData?.width}
           hasMesh={!!mesh}
           isRigged={isRigged}
-          playWalk={playWalk}
+          selectedAnimation={selectedAnimation}
+          isAnimationPlaying={playAnimation}
           onOpenRigger={() => setShowRigger(true)}
-          onWalkChange={setPlayWalk}
+          onAnimationChange={setSelectedAnimation}
+          onAnimationPlay={() => setPlayAnimation(true)}
+          onAnimationStop={() => setPlayAnimation(false)}
         />
 
         <TextureMapsPanel
@@ -617,6 +640,7 @@ export default function Home() {
         {imageData && contour && (
           <button
             className="debug-toggle"
+            title="Toggle contour debug overlay; helps inspect geometry extraction inputs."
             onClick={() => setShowDebug((v) => !v)}
           >
             {showDebug ? 'Hide' : 'Show'} contour debug
@@ -627,7 +651,13 @@ export default function Home() {
       </aside>
 
       <section className="viewport">
-        <ThreeViewport mesh={mesh} outline={outline} cameraResetKey={cameraResetKey} playWalk={playWalk} />
+        <ThreeViewport
+          mesh={mesh}
+          outline={outline}
+          cameraResetKey={cameraResetKey}
+          playAnimation={playAnimation}
+          animationId={selectedAnimation}
+        />
         <button
           className="reset-camera-btn"
           title="Reset camera"

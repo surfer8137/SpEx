@@ -1,5 +1,6 @@
 export type BackgroundMode = 'alpha' | 'white' | 'auto';
 export type SideMode = 'image' | 'flat' | 'edge';
+export type BoxFillMode = 'edge-stretch' | 'flat-color' | 'keep-transparent';
 export type FaceMode = 'front' | 'front-back' | 'front-back-lr' | 'front-back-lrtb';
 export type FaceName = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 
@@ -14,6 +15,10 @@ export interface AppSettings {
   backgroundMode: BackgroundMode;
   sideMode: SideMode;
   sideColor: string;
+  // Used in box mode when a face texture is missing (gap fill)
+  boxFillColor: string;
+  // Used in box mode to fill transparent texels inside face textures
+  boxFillMode: BoxFillMode;
   faceMode: FaceMode;
   outlineEnabled: boolean;
   outlineColor: string;

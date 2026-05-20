@@ -125,3 +125,153 @@ export function createWalkClip(): THREE.AnimationClip {
 
   return new THREE.AnimationClip('walk', 1.0, tracks);
 }
+
+export type RigTestAnimationId = 'walk' | 'run' | 'idle' | 'wave';
+
+export const RIG_TEST_ANIMATIONS: Array<{ id: RigTestAnimationId; label: string }> = [
+  { id: 'walk', label: 'Walk' },
+  { id: 'run', label: 'Run' },
+  { id: 'idle', label: 'Idle' },
+  { id: 'wave', label: 'Wave' },
+];
+
+function createRunClip(): THREE.AnimationClip {
+  const T = [0, 0.25, 0.5, 0.75, 1.0];
+  const tracks: THREE.KeyframeTrack[] = [];
+
+  tracks.push(new THREE.VectorKeyframeTrack('hips.position', T, [
+    0, 0.03, 0,
+    0, 0.0, 0,
+    0, 0.03, 0,
+    0, 0.0, 0,
+    0, 0.03, 0,
+  ]));
+
+  tracks.push(new THREE.QuaternionKeyframeTrack('spine.quaternion', T, [
+    ...q(8 * D, 0, 0),
+    ...q(10 * D, 0, 0),
+    ...q(8 * D, 0, 0),
+    ...q(10 * D, 0, 0),
+    ...q(8 * D, 0, 0),
+  ]));
+
+  tracks.push(new THREE.QuaternionKeyframeTrack('l_upper_leg.quaternion', T, [
+    ...q(-55 * D, 0, 0),
+    ...q(0, 0, 0),
+    ...q(50 * D, 0, 0),
+    ...q(0, 0, 0),
+    ...q(-55 * D, 0, 0),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('r_upper_leg.quaternion', T, [
+    ...q(50 * D, 0, 0),
+    ...q(0, 0, 0),
+    ...q(-55 * D, 0, 0),
+    ...q(0, 0, 0),
+    ...q(50 * D, 0, 0),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('l_lower_leg.quaternion', T, [
+    ...q(20 * D, 0, 0),
+    ...q(65 * D, 0, 0),
+    ...q(5 * D, 0, 0),
+    ...q(30 * D, 0, 0),
+    ...q(20 * D, 0, 0),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('r_lower_leg.quaternion', T, [
+    ...q(5 * D, 0, 0),
+    ...q(30 * D, 0, 0),
+    ...q(20 * D, 0, 0),
+    ...q(65 * D, 0, 0),
+    ...q(5 * D, 0, 0),
+  ]));
+
+  tracks.push(new THREE.QuaternionKeyframeTrack('l_upper_arm.quaternion', T, [
+    ...q(40 * D, 0, -12 * D),
+    ...q(0, 0, -12 * D),
+    ...q(-40 * D, 0, -12 * D),
+    ...q(0, 0, -12 * D),
+    ...q(40 * D, 0, -12 * D),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('r_upper_arm.quaternion', T, [
+    ...q(-40 * D, 0, 12 * D),
+    ...q(0, 0, 12 * D),
+    ...q(40 * D, 0, 12 * D),
+    ...q(0, 0, 12 * D),
+    ...q(-40 * D, 0, 12 * D),
+  ]));
+
+  return new THREE.AnimationClip('run', 0.7, tracks);
+}
+
+function createIdleClip(): THREE.AnimationClip {
+  const T = [0, 0.5, 1.0, 1.5, 2.0];
+  const tracks: THREE.KeyframeTrack[] = [];
+
+  tracks.push(new THREE.VectorKeyframeTrack('hips.position', T, [
+    0, 0.0, 0,
+    0, 0.01, 0,
+    0, 0.0, 0,
+    0, 0.01, 0,
+    0, 0.0, 0,
+  ]));
+
+  tracks.push(new THREE.QuaternionKeyframeTrack('spine.quaternion', T, [
+    ...q(0, 0, -2 * D),
+    ...q(1 * D, 0, 0),
+    ...q(0, 0, 2 * D),
+    ...q(-1 * D, 0, 0),
+    ...q(0, 0, -2 * D),
+  ]));
+
+  tracks.push(new THREE.QuaternionKeyframeTrack('l_upper_arm.quaternion', T, [
+    ...q(8 * D, 0, -10 * D),
+    ...q(6 * D, 0, -10 * D),
+    ...q(8 * D, 0, -10 * D),
+    ...q(6 * D, 0, -10 * D),
+    ...q(8 * D, 0, -10 * D),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('r_upper_arm.quaternion', T, [
+    ...q(8 * D, 0, 10 * D),
+    ...q(6 * D, 0, 10 * D),
+    ...q(8 * D, 0, 10 * D),
+    ...q(6 * D, 0, 10 * D),
+    ...q(8 * D, 0, 10 * D),
+  ]));
+
+  return new THREE.AnimationClip('idle', 2.0, tracks);
+}
+
+function createWaveClip(): THREE.AnimationClip {
+  const T = [0, 0.25, 0.5, 0.75, 1.0];
+  const tracks: THREE.KeyframeTrack[] = [];
+
+  tracks.push(new THREE.QuaternionKeyframeTrack('r_upper_arm.quaternion', T, [
+    ...q(-50 * D, 0, 35 * D),
+    ...q(-45 * D, 0, 25 * D),
+    ...q(-50 * D, 0, 35 * D),
+    ...q(-45 * D, 0, 25 * D),
+    ...q(-50 * D, 0, 35 * D),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('r_forearm.quaternion', T, [
+    ...q(35 * D, 0, 0),
+    ...q(50 * D, 0, 0),
+    ...q(35 * D, 0, 0),
+    ...q(50 * D, 0, 0),
+    ...q(35 * D, 0, 0),
+  ]));
+  tracks.push(new THREE.QuaternionKeyframeTrack('l_upper_arm.quaternion', T, [
+    ...q(12 * D, 0, -12 * D),
+    ...q(8 * D, 0, -12 * D),
+    ...q(12 * D, 0, -12 * D),
+    ...q(8 * D, 0, -12 * D),
+    ...q(12 * D, 0, -12 * D),
+  ]));
+
+  return new THREE.AnimationClip('wave', 1.2, tracks);
+}
+
+export function createRigTestClip(id: RigTestAnimationId): THREE.AnimationClip {
+  if (id === 'run') return createRunClip();
+  if (id === 'idle') return createIdleClip();
+  if (id === 'wave') return createWaveClip();
+  return createWalkClip();
+}

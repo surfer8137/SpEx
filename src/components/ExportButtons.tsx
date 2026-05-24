@@ -1,6 +1,6 @@
 'use client';
 import * as THREE from 'three';
-import { exportGLB, exportOBJ } from '../lib/exporters';
+import { exportGLB, exportOBJ, exportOBJMixamoSafe } from '../lib/exporters';
 
 interface Props {
   mesh: THREE.Mesh | null;
@@ -74,6 +74,13 @@ export default function ExportButtons({ mesh }: Props) {
           Export OBJ
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.obj)}</span>}
+        <button
+          title="Export simplified OBJ ZIP (single material + single texture) for better Mixamo compatibility."
+          disabled={!mesh}
+          onClick={() => mesh && exportOBJMixamoSafe(mesh)}
+        >
+          Export Mixamo-safe OBJ
+        </button>
       </div>
     </div>
   );

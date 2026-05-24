@@ -18,32 +18,31 @@ export function exportGLB(mesh: THREE.Mesh): void {
 
 // OBJ ZIP — bundles OBJ + PBR MTL + all texture PNGs into model.zip.
 export function exportOBJ(mesh: THREE.Mesh): void {
+  const srcMats = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as THREE.MeshStandardMaterial[];
+  // Clone materials and set deterministic names so usemtl in OBJ always matches model.mtl.
+  const namedMats = srcMats.map((m, i) => {
+    const c = m.clone() as THREE.MeshStandardMaterial;
+    c.name = `material_${i}`;
+    return c;
+  });
+
+  const tempMesh = new THREE.Mesh(mesh.geometry, namedMats);
+  tempMesh.name = mesh.name || 'model';
+
   const exporter = new OBJExporter();
-  const rawObj = exporter.parse(mesh);
+  const rawObj = exporter.parse(tempMesh);
   const obj = `mtllib model.mtl\n${rawObj}`;
 
-  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-  const hasBackMat = mats.length >= 3;
-
-  // Collect PBR maps from first material (shared across sub-meshes)
-  const firstMat = mats[0] as THREE.MeshStandardMaterial;
-  const hasMaps = {
-    normal:    !!firstMat?.normalMap,
-    roughness: !!firstMat?.roughnessMap,
-    metalness: !!firstMat?.metalnessMap,
-  };
-
-  // Build PBR-compatible MTL
+  // Build classic MTL (Mixamo is more reliable with map_Kd than PBR extensions).
   const mtlLines: string[] = [];
-  mats.forEach((mat, i) => {
-    const isBack = hasBackMat && i === 1;
-    const baseTex = isBack ? 'back_texture.png' : 'texture.png';
+  namedMats.forEach((mat, i) => {
+    const texFile = `texture_${i}.png`;
+    const kd = mat.color ?? new THREE.Color(1, 1, 1);
     mtlLines.push(
       `newmtl material_${i}`,
-      `map_Kd ${baseTex}`,
-      ...(hasMaps.normal    ? [`norm normal_map.png`, `map_Bump normal_map.png`] : []),
-      ...(hasMaps.roughness ? [`map_Pr roughness_map.png`] : []),
-      ...(hasMaps.metalness ? [`map_Pm metallic_map.png`]  : []),
+      `Kd ${kd.r.toFixed(6)} ${kd.g.toFixed(6)} ${kd.b.toFixed(6)}`,
+      `d ${mat.opacity !== undefined ? mat.opacity.toFixed(6) : '1.000000'}`,
+      ...(mat.map ? [`map_Kd ${texFile}`] : []),
       '',
     );
   });
@@ -62,35 +61,75 @@ export function exportOBJ(mesh: THREE.Mesh): void {
       }, 'image/png'),
     );
 
-  const getCanvas = (tex: THREE.Texture | null | undefined) =>
-    tex?.image as HTMLCanvasElement | undefined;
+  const getCanvas = (tex: THREE.Texture | null | undefined) => tex?.image as HTMLCanvasElement | undefined;
 
   const bundle = async () => {
-    // Base textures
-    const frontCanvas = getCanvas(firstMat?.map);
-    if (frontCanvas) files['texture.png'] = await canvasToUint8(frontCanvas);
-
-    if (hasBackMat) {
-      const backCanvas = getCanvas((mats[1] as THREE.MeshStandardMaterial)?.map);
-      if (backCanvas) files['back_texture.png'] = await canvasToUint8(backCanvas);
-    }
-
-    // PBR maps (from first material — shared)
-    if (hasMaps.normal) {
-      const c = getCanvas(firstMat.normalMap);
-      if (c) files['normal_map.png'] = await canvasToUint8(c);
-    }
-    if (hasMaps.roughness) {
-      const c = getCanvas(firstMat.roughnessMap);
-      if (c) files['roughness_map.png'] = await canvasToUint8(c);
-    }
-    if (hasMaps.metalness) {
-      const c = getCanvas(firstMat.metalnessMap);
-      if (c) files['metallic_map.png'] = await canvasToUint8(c);
+    // One base texture per material when present.
+    for (let i = 0; i < namedMats.length; i++) {
+      const c = getCanvas(namedMats[i].map);
+      if (c) files[`texture_${i}.png`] = await canvasToUint8(c);
     }
 
     zip(files, (err, data) => {
       if (!err) downloadBlob(new Blob([data], { type: 'application/zip' }), 'model.zip');
+    });
+  };
+
+  bundle();
+}
+
+// Mixamo-safe OBJ ZIP — forces a single material + single map_Kd texture.
+export function exportOBJMixamoSafe(mesh: THREE.Mesh): void {
+  const mats = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as THREE.MeshStandardMaterial[];
+  const firstMat = mats[0] as THREE.MeshStandardMaterial | undefined;
+
+  const safeMat = new THREE.MeshStandardMaterial({
+    name: 'material_0',
+    map: firstMat?.map ?? null,
+    color: firstMat?.color ?? new THREE.Color(1, 1, 1),
+    transparent: false,
+    opacity: 1,
+  });
+
+  const tempMesh = new THREE.Mesh(mesh.geometry, safeMat);
+  tempMesh.name = mesh.name || 'model';
+  // Mixamo often interprets forward axis opposite to our viewport convention.
+  // Rotate 180° on Y for upload-facing orientation.
+  tempMesh.rotation.y = Math.PI;
+  tempMesh.updateMatrixWorld(true);
+
+  const exporter = new OBJExporter();
+  const rawObj = exporter.parse(tempMesh);
+  const obj = `mtllib model.mtl\n${rawObj}`;
+
+  const kd = safeMat.color ?? new THREE.Color(1, 1, 1);
+  const mtl = [
+    'newmtl material_0',
+    `Kd ${kd.r.toFixed(6)} ${kd.g.toFixed(6)} ${kd.b.toFixed(6)}`,
+    'd 1.000000',
+    ...(safeMat.map ? ['map_Kd texture.png'] : []),
+    '',
+  ].join('\n');
+
+  const enc = new TextEncoder();
+  const files: Record<string, Uint8Array> = {
+    'model.obj': enc.encode(obj),
+    'model.mtl': enc.encode(mtl),
+  };
+
+  const canvasToUint8 = (canvas: HTMLCanvasElement): Promise<Uint8Array> =>
+    new Promise((resolve) =>
+      canvas.toBlob((blob) => {
+        if (!blob) { resolve(new Uint8Array()); return; }
+        blob.arrayBuffer().then((buf) => resolve(new Uint8Array(buf)));
+      }, 'image/png'),
+    );
+
+  const bundle = async () => {
+    const canvas = safeMat.map?.image as HTMLCanvasElement | undefined;
+    if (canvas) files['texture.png'] = await canvasToUint8(canvas);
+    zip(files, (err, data) => {
+      if (!err) downloadBlob(new Blob([data], { type: 'application/zip' }), 'model_mixamo_safe.zip');
     });
   };
 

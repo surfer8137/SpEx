@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import earcut from 'earcut';
 import type { ContourResult, Contour2D } from './contourExtractor';
-import type { SideMode, FaceMode, FaceOffsets } from '../types';
+import type { SideMode, FaceMode, FaceOffsets, BackgroundMode } from '../types';
 import { makeNormalMap } from './normalMapGen';
 import type { BoxFillMode } from '../types';
 
@@ -498,11 +498,13 @@ export function buildBoxMesh(
     p2: [number,number,number], p3: [number,number,number],
     n: [number,number,number],
     matIndex: number,
+    faceUvs?: readonly number[], // 8 values: u0,v0, u1,v1, u2,v2, u3,v3
   ) => {
     const start = indices.length;
     for (const p of [p0, p1, p2, p3]) positions.push(...p);
     for (let k = 0; k < 4; k++) normals.push(...n);
-    uvs.push(0,0, 1,0, 1,1, 0,1);
+    if (faceUvs) uvs.push(...faceUvs);
+    else uvs.push(0,0, 1,0, 1,1, 0,1);
     indices.push(vi, vi+1, vi+2,  vi, vi+2, vi+3);
     vi += 4;
     groups.push({ start, count: 6, matIndex });
@@ -544,10 +546,10 @@ export function buildBoxMesh(
     addFace(ftl, ftr, fbr, fbl, [0,0,1], 0);
     // Back   (-Z) — mirror X for correct winding
     addFace(btr, btl, bbl, bbr, [0,0,-1], 1);
-    // Right  (+X)
-    addFace(ftr, btr, bbr, fbr, [1,0,0], 2);
-    // Left   (-X)
-    addFace(btl, ftl, fbl, bbl, [-1,0,0], 3);
+    // Right  (+X) — u=1 at front so right-walk sprite (face on right) aligns correctly
+    addFace(ftr, btr, bbr, fbr, [1,0,0], 2, [1,0, 0,0, 0,1, 1,1]);
+    // Left   (-X) — u=0 at front so left-walk sprite (face on left) aligns correctly
+    addFace(btl, ftl, fbl, bbl, [-1,0,0], 3, [1,0, 0,0, 0,1, 1,1]);
     // Top    (+Y)
     addFace(btl, btr, ftr, ftl, [0,1,0], 4);
     // Bottom (-Y)
@@ -568,17 +570,17 @@ export function buildBoxMesh(
       ao('back',  [-halfW,-halfH,-halfZ]), ao('back',  [+halfW,-halfH,-halfZ]),
       [0,0,-1], 1,
     );
-    // Right  (x = +halfW)
+    // Right  (x = +halfW) — u=1 at front (+halfZ) so right-walk sprite aligns correctly
     addFace(
       ao('right', [+halfW,+halfH,+halfZ]), ao('right', [+halfW,+halfH,-halfZ]),
       ao('right', [+halfW,-halfH,-halfZ]), ao('right', [+halfW,-halfH,+halfZ]),
-      [1,0,0], 2,
+      [1,0,0], 2, [1,0, 0,0, 0,1, 1,1],
     );
-    // Left   (x = -halfW)
+    // Left   (x = -halfW) — u=0 at front (+halfZ) so left-walk sprite aligns correctly
     addFace(
       ao('left',  [-halfW,+halfH,-halfZ]), ao('left',  [-halfW,+halfH,+halfZ]),
       ao('left',  [-halfW,-halfH,+halfZ]), ao('left',  [-halfW,-halfH,-halfZ]),
-      [-1,0,0], 3,
+      [-1,0,0], 3, [1,0, 0,0, 0,1, 1,1],
     );
     // Top    (y = +halfH)
     addFace(
@@ -1185,7 +1187,6 @@ export function buildLatheMesh(
   };
   return { mesh, stats };
 }
-
 export interface OutlineOptions {
   depth: number;
   scale: number;

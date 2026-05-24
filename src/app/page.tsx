@@ -83,10 +83,9 @@ export default function Home() {
   const [showDebug, setShowDebug] = useState(false);
   // Preset overrides tolerance for rebuild without touching slider state
   const [presetTol, setPresetTol] = useState<number | null>(null);
-  // Atlas (single-image) mode
+  // One image / Per face toggle
   const [textureMode, setTextureMode] = useState<'single' | 'multi'>('multi');
   const [atlasFile, setAtlasFile] = useState<File | null>(null);
-  // Last loaded atlas image — kept so "Re-adjust" can reopen the mapper
   const [atlasImageData, setAtlasImageData] = useState<ImageData | null>(null);
   const [pendingAtlasData, setPendingAtlasData] = useState<ImageData | null>(null);
   const [showAtlasMapper, setShowAtlasMapper] = useState(false);
@@ -392,57 +391,6 @@ export default function Home() {
     if (imageData) reprocess(imageData, settings, presetTol ?? undefined, faceOffsets, weld);
   }, [imageData, settings, presetTol, reprocess, faceOffsets]);
 
-  // ── Atlas (single-image) helpers ───────────────────────────────────────────
-
-  const handleAtlasImage = useCallback((file: File, atlas: ImageData) => {
-    setAtlasFile(file);
-    setAtlasImageData(atlas);
-    if (settings.faceMode === 'front') {
-      // Single face — no mapping needed, just use as front
-      setImageFile(file);
-      setImageData(atlas);
-      reprocess(atlas, settings, presetTol ?? undefined);
-    } else {
-      // Open mapper modal so user can assign tiles
-      setPendingAtlasData(atlas);
-      setShowAtlasMapper(true);
-    }
-  }, [settings, presetTol, reprocess]);
-
-  const handleAtlasConfirm = useCallback((faces: Partial<Record<'front'|'back'|'left'|'right'|'top'|'bottom', ImageData>>) => {
-    setShowAtlasMapper(false);
-    setPendingAtlasData(null);
-
-    const front  = faces.front  ?? null;
-    const back   = faces.back   ?? null;
-    const right  = faces.right  ?? null;
-    const left   = faces.left   ?? null;
-    const top    = faces.top    ?? null;
-    const bottom = faces.bottom ?? null;
-
-    if (!front) return;
-
-    setImageFile(atlasFile);   setImageData(front);
-    setBackImageFile(back ? atlasFile : null);    setBackImageData(back);
-    setRightSideFile(right ? atlasFile : null);   setRightSideData(right);
-    setLeftSideFile(left ? atlasFile : null);     setLeftSideData(left);
-    setTopSideFile(top ? atlasFile : null);       setTopSideData(top);
-    setBottomSideFile(bottom ? atlasFile : null); setBottomSideData(bottom);
-
-    // Auto-enable box mode when side images are provided — extrusion edges
-    // can't display flat side textures cleanly.
-    const hasLR = !!(right || left);
-    const activeSettings = (hasLR && !settings.boxMode)
-      ? { ...settings, boxMode: true }
-      : settings;
-    if (hasLR && !settings.boxMode) setSettings(activeSettings);
-
-    const m = extraMaps(activeSettings);
-    process(front, activeSettings, presetTol ?? undefined,
-      back ?? undefined, m.normal, m.roughness, m.metallic,
-      right ?? undefined, left ?? undefined, top ?? undefined, bottom ?? undefined);
-  }, [atlasFile, settings, presetTol, process, extraMaps]);
-
   const handleBuildRig = useCallback(() => {
     if (!mesh || !imageData) return;
     // For box-mode characters, force welded faces before rigging so animation
@@ -468,6 +416,49 @@ export default function Home() {
       setStatusKind('error');
     }
   }, [mesh, imageData, rigMarkers, settings, weldFaces, reprocess, presetTol, faceOffsets]);
+
+  // ── Atlas (single-image) helpers ───────────────────────────────────────────
+  const handleAtlasImage = useCallback((file: File, atlas: ImageData) => {
+    setAtlasFile(file);
+    setAtlasImageData(atlas);
+    if (settings.faceMode === 'front') {
+      setImageFile(file);
+      setImageData(atlas);
+      reprocess(atlas, settings, presetTol ?? undefined);
+    } else {
+      setPendingAtlasData(atlas);
+      setShowAtlasMapper(true);
+    }
+  }, [settings, presetTol, reprocess]);
+
+  const handleAtlasConfirm = useCallback((faces: Partial<Record<'front'|'back'|'left'|'right'|'top'|'bottom', ImageData>>) => {
+    setShowAtlasMapper(false);
+    setPendingAtlasData(null);
+
+    const front  = faces.front  ?? null;
+    const back   = faces.back   ?? null;
+    const right  = faces.right  ?? null;
+    const left   = faces.left   ?? null;
+    const top    = faces.top    ?? null;
+    const bottom = faces.bottom ?? null;
+    if (!front) return;
+
+    setImageFile(atlasFile);        setImageData(front);
+    setBackImageFile(back   ? atlasFile : null); setBackImageData(back);
+    setRightSideFile(right  ? atlasFile : null); setRightSideData(right);
+    setLeftSideFile(left    ? atlasFile : null);  setLeftSideData(left);
+    setTopSideFile(top      ? atlasFile : null);  setTopSideData(top);
+    setBottomSideFile(bottom? atlasFile : null);  setBottomSideData(bottom);
+
+    const hasLR = !!(right || left);
+    const activeSettings = (hasLR && !settings.boxMode) ? { ...settings, boxMode: true } : settings;
+    if (hasLR && !settings.boxMode) setSettings(activeSettings);
+
+    const m = extraMaps(activeSettings);
+    process(front, activeSettings, presetTol ?? undefined,
+      back ?? undefined, m.normal, m.roughness, m.metallic,
+      right ?? undefined, left ?? undefined, top ?? undefined, bottom ?? undefined);
+  }, [atlasFile, settings, presetTol, process, extraMaps]);
 
   const useBackImage = settings.faceMode !== 'front';
   const showLRSides  = settings.faceMode === 'front-back-lr' || settings.faceMode === 'front-back-lrtb';
@@ -519,35 +510,34 @@ export default function Home() {
           </select>
         </label>
 
-        {/* One image / Per face toggle — hidden in front-only (no meaningful split) */}
+        {/* One image / Per face toggle — hidden in front-only mode */}
         {settings.faceMode !== 'front' && (
           <div className="texture-mode-toggle">
             <button
               className={textureMode === 'single' ? 'active' : ''}
-              title="Use one atlas image and map its tiles to model faces."
+              title="Upload one image split into equal horizontal tiles (front|back|right|left|top|bottom)."
               onClick={() => setTextureMode('single')}
             >One image</button>
             <button
               className={textureMode === 'multi' ? 'active' : ''}
-              title="Use separate images per face to control model texturing."
+              title="Upload a separate image per face."
               onClick={() => setTextureMode('multi')}
             >Per face</button>
           </div>
         )}
 
-        {textureMode === 'single' ? (
+        {textureMode === 'single' && settings.faceMode !== 'front' ? (
           <>
             <ImageUploader
               onImage={handleAtlasImage}
               currentFile={atlasFile}
               label={
-                settings.faceMode === 'front' ? 'Sprite image' :
-                settings.faceMode === 'front-back' ? 'Atlas (front | back)' :
+                settings.faceMode === 'front-back'   ? 'Atlas (front | back)' :
                 settings.faceMode === 'front-back-lr' ? 'Atlas (front | back | right | left)' :
-                'Atlas (front | back | right | left | top | bottom)'
+                                                        'Atlas (front | back | right | left | top | bottom)'
               }
             />
-            {settings.faceMode !== 'front' && atlasImageData && (
+            {atlasImageData && (
               <button
                 className="readjust-btn"
                 title="Re-map atlas tiles; changes which texture goes to each model face."

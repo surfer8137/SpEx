@@ -176,7 +176,7 @@ export function buildSkinnedMesh(
   const posAttr = geo.attributes.position;
   const vertCount = posAttr.count;
 
-  const skinIndices = new Float32Array(vertCount * 4);
+  const skinIndices = new Uint16Array(vertCount * 4);
   const skinWeights = new Float32Array(vertCount * 4);
 
   const hipsY = worldPos.hips[1];
@@ -240,7 +240,7 @@ export function buildSkinnedMesh(
     }
   }
 
-  geo.setAttribute('skinIndex',  new THREE.Uint16BufferAttribute(Array.from(skinIndices), 4));
+  geo.setAttribute('skinIndex',  new THREE.Uint16BufferAttribute(skinIndices, 4));
   geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeights, 4));
 
   // 4. Create skeleton

@@ -179,7 +179,7 @@ export default function SettingsPanel({
           </label>
           {settings.boxMode && (
             <p style={{ fontSize: '0.76rem', color: 'var(--text-muted, #aaa)', margin: 0 }}>
-              6 flat panels, no silhouette. Best for buildings &amp; props.
+              6 flat panels. Best for buildings &amp; props.
               Use Extrusion Depth to set thickness.
             </p>
           )}

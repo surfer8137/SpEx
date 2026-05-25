@@ -227,6 +227,13 @@ export default function Home() {
 
         if (id !== runId.current) return;
 
+        // Translate so bottom of mesh sits at Y=0 (ground level).
+        if (newMesh) {
+          newMesh.geometry.computeBoundingBox();
+          const minY = newMesh.geometry.boundingBox!.min.y;
+          if (minY !== 0) newMesh.geometry.translate(0, -minY, 0);
+        }
+
         setMesh(newMesh);
         setOutline(newOutline);
         setMeshStats(stats);

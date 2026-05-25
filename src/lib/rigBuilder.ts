@@ -169,10 +169,8 @@ export function buildSkinnedMesh(
     }
   }
 
-  // 3. Clone geometry and add skinning attributes
-  const sourceGeo = originalMesh.geometry.clone();
-  // Add local vertex density so joint bends deform smoother (less panel-like creasing).
-  const geo = subdivideGeometryForSkinning(sourceGeo, 1);
+  // 3. Clone geometry — no subdivision: rigid skinning needs original panels intact.
+  const geo = originalMesh.geometry.clone();
   const posAttr = geo.attributes.position;
   const vertCount = posAttr.count;
 
@@ -184,59 +182,82 @@ export function buildSkinnedMesh(
   const shoulderY = (worldPos.l_shoulder[1] + worldPos.r_shoulder[1]) * 0.5;
   const centerX = worldPos.hips[0];
 
-  for (let v = 0; v < vertCount; v++) {
-    const vx = posAttr.getX(v);
-    const vy = posAttr.getY(v);
-
-    // Compute distance to each bone segment (in world XY)
+  // Helper: given a centroid (cx, cy), return the best bone index using
+  // the same region-aware penalty logic for both group and per-vertex paths.
+  const bestBoneFor = (cx: number, cy: number): number => {
     const dists: Array<{ idx: number; dist: number }> = [];
     for (let b = 0; b < numBones; b++) {
       const [startJoint, endJoint] = BONE_SEGMENTS[b];
       const [ax, ay] = worldPos[startJoint];
       const [bxp, byp] = worldPos[endJoint];
-      let d = distToSegment(vx, vy, ax, ay, bxp, byp);
+      let d = distToSegment(cx, cy, ax, ay, bxp, byp);
 
-      // Region-aware penalties so torso/legs keep cohesive deformation.
-      // This avoids e.g. leg verts being pulled by arm chains just because XY happens to be close.
-      const isArmBone = b >= 2 && b <= 7;
-      const isLegBone = b >= 8 && b <= 11;
-      const isCoreBone = b <= 1; // hips, spine
-      const isLeftBone = b === 2 || b === 3 || b === 4 || b === 8 || b === 9;
+      const isArmBone  = b >= 2 && b <= 7;
+      const isLegBone  = b >= 8 && b <= 11;
+      const isCoreBone = b <= 1;
+      const isLeftBone  = b === 2 || b === 3 || b === 4 || b === 8 || b === 9;
       const isRightBone = b === 5 || b === 6 || b === 7 || b === 10 || b === 11;
 
-      // Below hips: strongly prefer leg chains.
-      if (vy < hipsY) {
+      if (cy < hipsY) {
         if (isArmBone) d *= 4.0;
         if (isCoreBone) d *= 1.8;
       }
-
-      // Mid torso (hips→shoulders): avoid leg bleeding.
-      if (vy >= hipsY && vy <= shoulderY) {
+      if (cy >= hipsY && cy <= shoulderY) {
         if (isLegBone) d *= 3.0;
       }
-
-      // Above spine: avoid legs entirely.
-      if (vy > spineY && isLegBone) d *= 5.0;
-
-      // Gentle left/right bias to reduce cross-body pulls around center seam.
-      if (vx < centerX && isRightBone) d *= 1.35;
-      if (vx > centerX && isLeftBone) d *= 1.35;
+      if (cy > spineY && isLegBone) d *= 5.0;
+      if (cx < centerX && isRightBone) d *= 1.35;
+      if (cx > centerX && isLeftBone)  d *= 1.35;
 
       dists.push({ idx: b, dist: d });
     }
-
-    // Sort by distance, take top 4
     dists.sort((a, b) => a.dist - b.dist);
-    const top4 = dists.slice(0, 4);
+    return dists[0]?.idx ?? 0;
+  };
 
-    // Inverse-squared weights
-    const EPS = 1e-6;
-    const rawW = top4.map(({ dist }) => 1 / (dist * dist + EPS));
-    const total = rawW.reduce((s, w) => s + w, 0);
+  // Group-based rigid skinning: compute each group's centroid, pick one bone for
+  // the whole group. This keeps every face panel moving as one rigid piece — no tearing.
+  const hasGroups = geo.groups.length > 0;
+  if (hasGroups) {
+    // Build vertex → bone map via groups.
+    const vertBone = new Int32Array(vertCount).fill(-1);
+    const indexAttr = geo.index;
 
-    for (let k = 0; k < 4; k++) {
-      skinIndices[v * 4 + k] = top4[k]?.idx ?? 0;
-      skinWeights[v * 4 + k] = top4[k] ? rawW[k] / total : 0;
+    for (const group of geo.groups) {
+      // Compute centroid of all vertices referenced by this group.
+      let sumX = 0, sumY = 0, count = 0;
+      for (let i = group.start; i < group.start + group.count; i++) {
+        const vi = indexAttr ? indexAttr.getX(i) : i;
+        sumX += posAttr.getX(vi);
+        sumY += posAttr.getY(vi);
+        count++;
+      }
+      if (count === 0) continue;
+      const boneIdx = bestBoneFor(sumX / count, sumY / count);
+
+      // Assign every vertex in this group to that bone.
+      for (let i = group.start; i < group.start + group.count; i++) {
+        const vi = indexAttr ? indexAttr.getX(i) : i;
+        vertBone[vi] = boneIdx;
+      }
+    }
+
+    // Any vertex not covered by a group falls back to closest bone.
+    for (let v = 0; v < vertCount; v++) {
+      const boneIdx = vertBone[v] >= 0
+        ? vertBone[v]
+        : bestBoneFor(posAttr.getX(v), posAttr.getY(v));
+      skinIndices[v * 4] = boneIdx;
+      skinWeights[v * 4] = 1;
+      for (let k = 1; k < 4; k++) { skinIndices[v * 4 + k] = 0; skinWeights[v * 4 + k] = 0; }
+    }
+  } else {
+    // No groups — per-vertex closest bone fallback.
+    for (let v = 0; v < vertCount; v++) {
+      const boneIdx = bestBoneFor(posAttr.getX(v), posAttr.getY(v));
+      skinIndices[v * 4] = boneIdx;
+      skinWeights[v * 4] = 1;
+      for (let k = 1; k < 4; k++) { skinIndices[v * 4 + k] = 0; skinWeights[v * 4 + k] = 0; }
     }
   }
 

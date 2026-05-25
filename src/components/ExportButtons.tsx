@@ -1,6 +1,6 @@
 'use client';
 import * as THREE from 'three';
-import { exportGLB, exportOBJ, exportOBJMixamoSafe } from '../lib/exporters';
+import { exportGLB, exportOBJ, exportOBJMixamoSafe, exportGLBCutout } from '../lib/exporters';
 
 interface Props {
   mesh: THREE.Mesh | null;
@@ -59,6 +59,13 @@ export default function ExportButtons({ mesh }: Props) {
           Export GLB
         </button>
         {sizes && <span className="export-size">{formatBytes(sizes.glb)}</span>}
+        <button
+          title="Export each face panel as a separate named mesh node (no skinning). Animate each panel independently in Godot, Unity, Blender, etc."
+          disabled={!mesh}
+          onClick={() => mesh && exportGLBCutout(mesh)}
+        >
+          Export Cut-out GLB
+        </button>
         <a
           className="export-hint-link"
           title="Open GLTFast docs for importing this exported GLB into Unity."
